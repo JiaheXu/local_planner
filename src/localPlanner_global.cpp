@@ -61,7 +61,7 @@ double minPathRange  = 1.0;
 double pathRangeStep = 0.5;
 bool   pathCropByGoal = true;
 
-double goalCloseDis   = 3.0;
+double goalCloseDis   = 0.2;
 double goalClearRange = 0.2;
 double goalX = 0.0, goalY = 0.0;
 
@@ -110,22 +110,22 @@ rclcpp::Node::SharedPtr nh;
 //laser_geometry::LaserProjector projector;
 
 // ---------------- Handlers ----------------
-// void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
-// {
-//   odomTime = rclcpp::Time(odom->header.stamp).seconds();
-//   double roll, pitch, yaw;
-//   const auto& q = odom->pose.pose.orientation;
-//   tf2::Matrix3x3(tf2::Quaternion(q.x, q.y, q.z, q.w)).getRPY(roll, pitch, yaw);
+void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
+{
+  odomTime = rclcpp::Time(odom->header.stamp).seconds();
+  double roll, pitch, yaw;
+  const auto& q = odom->pose.pose.orientation;
+  tf2::Matrix3x3(tf2::Quaternion(q.x, q.y, q.z, q.w)).getRPY(roll, pitch, yaw);
 
-//   vehicleRoll = roll;
-//   vehiclePitch = pitch;
-//   vehicleYaw = yaw;
+  vehicleRoll = roll;
+  vehiclePitch = pitch;
+  vehicleYaw = yaw;
 
-//   // offset lidar vs base if needed
-//   vehicleX = odom->pose.pose.position.x - cos(yaw) * sensorOffsetX + sin(yaw) * sensorOffsetY;
-//   vehicleY = odom->pose.pose.position.y - sin(yaw) * sensorOffsetX - cos(yaw) * sensorOffsetY;
-//   vehicleZ = odom->pose.pose.position.z;
-// }
+  // offset lidar vs base if needed
+  vehicleX = odom->pose.pose.position.x - cos(yaw) * sensorOffsetX + sin(yaw) * sensorOffsetY;
+  vehicleY = odom->pose.pose.position.y - sin(yaw) * sensorOffsetX - cos(yaw) * sensorOffsetY;
+  vehicleZ = odom->pose.pose.position.z;
+}
 
 void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
 {
@@ -336,7 +336,7 @@ int main(int argc, char** argv)
   nh->get_parameter("goalY", goalY);
 
   // Subs & pubs
-  // auto subOdometry = nh->create_subscription<nav_msgs::msg::Odometry>("/odom", 5, odometryHandler);
+  auto subOdometry = nh->create_subscription<nav_msgs::msg::Odometry>("/odom", 5, odometryHandler);
   auto subLaser    = nh->create_subscription<sensor_msgs::msg::LaserScan>("/scan", rclcpp::SensorDataQoS(), laserScanHandler);
   auto subGoal     = nh->create_subscription<geometry_msgs::msg::PointStamped>("/way_point", 5, goalHandler);
 
