@@ -98,6 +98,9 @@ float clearPathPerGroupScore[36 * groupNum] = {0};
 std::vector<int> correspondences[gridVoxelNum];
 
 bool newLaserCloud = false;
+const double lidarTimeoutSec = 2.0;
+double lastLaserTime = 0.0;
+bool lidarTimeoutActive = false;
 
 double odomTime = 0.0;
 
@@ -155,6 +158,12 @@ void laserScanHandler(const sensor_msgs::msg::LaserScan::ConstSharedPtr scan) {
   laserDwzFilter.filter(*laserCloudDwz);
 
   newLaserCloud = true;
+  if (nh) {
+    lastLaserTime = nh->now().seconds();
+  } else {
+    lastLaserTime = rclcpp::Clock().now().seconds();
+  }
+  lidarTimeoutActive = false;
 }
 
 // ---------------- File Readers (unchanged logic) ----------------
@@ -348,6 +357,25 @@ int main(int argc, char** argv)
 #endif
 
   RCLCPP_INFO(nh->get_logger(), "Reading path files…");
+
+  auto publishZeroPath = [&]() {
+    path.poses.resize(1);
+    path.poses[0].pose.position.x = 0;
+    path.poses[0].pose.position.y = 0;
+    path.poses[0].pose.position.z = 0;
+    path.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
+    path.header.frame_id = "base_link";
+    pubPath->publish(path);
+
+#if PLOTPATHSET == 1
+    freePaths->clear();
+    sensor_msgs::msg::PointCloud2 freePaths2;
+    pcl::toROSMsg(*freePaths, freePaths2);
+    freePaths2.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
+    freePaths2.header.frame_id = "base_link";
+    pubFreePaths->publish(freePaths2);
+#endif
+  };
 
   // init containers
   laserCloudStack[0].reset(new pcl::PointCloud<pcl::PointXYZI>());
@@ -608,22 +636,15 @@ int main(int argc, char** argv)
 
       // If nothing found, publish a zero-length path at base_link
       if (!pathFound) {
-        path.poses.resize(1);
-        path.poses[0].pose.position.x = 0;
-        path.poses[0].pose.position.y = 0;
-        path.poses[0].pose.position.z = 0;
-        path.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-        path.header.frame_id = "base_link";
-        pubPath->publish(path);
-
-#if PLOTPATHSET == 1
-        freePaths->clear();
-        sensor_msgs::msg::PointCloud2 freePaths2;
-        pcl::toROSMsg(*freePaths, freePaths2);
-        freePaths2.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-        freePaths2.header.frame_id = "base_link";
-        pubFreePaths->publish(freePaths2);
-#endif
+        publishZeroPath();
+      }
+    } else {
+      double nowSec = nh->now().seconds();
+      bool lidarTimedOut = lastLaserTime > 0.0 && (nowSec - lastLaserTime) > lidarTimeoutSec;
+      if (lidarTimedOut && !lidarTimeoutActive) {
+        publishZeroPath();
+        lidarTimeoutActive = true;
+        RCLCPP_WARN(nh->get_logger(), "LiDAR data timeout (%.2f s); publishing stop path.", nowSec - lastLaserTime);
       }
     }
 
@@ -633,4 +654,3 @@ int main(int argc, char** argv)
 
   return 0;
 }
-
