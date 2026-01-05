@@ -16,10 +16,10 @@
 
   <!-- New args for pathFollower params -->
   <arg name="default_speed" default="0.4"/>
-  <arg name="yaw_rate_gain" default="0.4"/>
+  <arg name="yaw_rate_gain" default="0.5"/>
   <arg name="obstacle_distance_threshold" default="1.5"/>
   <arg name="obstacle_half_angle_deg" default="60.0"/>
-  <arg name="obstacle_gain" default="3.0"/>
+  <arg name="obstacle_gain" default="4.0"/>
 
   <arg name="lookahead_distance" default="1.0"/>
   <arg name="goal_tolerance" default="0.2"/>
@@ -78,7 +78,7 @@
     <param name="request_distance" value="$(var request_distance)" />
     <param name="obstacle_distance_threshold" value="$(var obstacle_distance_threshold)" />
     <param name="obstacle_half_angle_deg" value="$(var obstacle_half_angle_deg)" />
-    <param name="obstacle_gain" value="$(var obstacle_gain)" />
+    <param name="obstacle_gain" value="3.0" />
 
     <!-- Keep compatibility args if needed -->
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
