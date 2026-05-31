@@ -32,7 +32,7 @@ public:
     // New obstacle-related params
     this->declare_parameter("obstacle_distance_threshold", 0.5);
     this->declare_parameter("obstacle_half_angle_deg", 30.0);
-
+    this->declare_parameter("obstacle_gain", 3.0);   // ✅ ADD THIS
     // Load initial values
     defaultSpeed   = this->get_parameter("default_speed").as_double();
     desiredSpeed   = defaultSpeed;
