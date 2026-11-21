@@ -1,0 +1,29 @@
+/**:
+  ros__parameters:
+    # Drive-stage backend. Both backends retain initial/final in-place rotations.
+    planner_backend: mpc
+    vehicleFrame: astribot_viz_chassis
+    requireStampedGoal: true
+    # URDF chassis collision cylinder radius=0.30 m; use fixed lattice radius=0.55 m.
+    vehicleLength: 0.6
+    vehicleWidth: 0.6
+    sensorOffsetX: 0.0
+    sensorOffsetY: 0.0
+    twoWayDrive: false
+    laserVoxelSize: 0.03
+    checkObstacle: true
+    checkRotObstacle: true
+    adjacentRange: 3.0
+    pointPerPathThre: 1
+    maxSpeed: 0.05
+    dirWeight: 0.02
+    dirThre: 90.0
+    dirToVehicle: true
+    pathScale: 1.0
+    minPathScale: 1.0
+    pathScaleStep: 0.25
+    minPathRange: 0.1
+    pathRangeStep: 0.25
+    pathCropByGoal: true
+    goalCloseDis: 3.0
+    goalClearRange: 0.55

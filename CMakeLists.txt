@@ -18,6 +18,10 @@ endif()
 include_directories(include include/nlohmann)
 
 find_package(ament_cmake REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Eigen3 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -32,7 +36,18 @@ find_package(pcl_ros REQUIRED)
 #find_package(unitree_api REQUIRED)
 #find_package(go2_sport_api REQUIRED)
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/MpcRequest.msg" "msg/MpcResult.msg"
+  DEPENDENCIES std_msgs builtin_interfaces geometry_msgs nav_msgs)
+ament_export_dependencies(rosidl_default_runtime)
 add_executable(localPlanner src/localPlanner.cpp)
+target_link_libraries(localPlanner Eigen3::Eigen)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(localPlanner "${cpp_typesupport_target}")
+add_executable(planar_mpc_test test/planar_mpc_test.cpp)
+target_link_libraries(planar_mpc_test Eigen3::Eigen)
+enable_testing()
+add_test(NAME planar_mpc COMMAND planar_mpc_test)
 add_executable(pathFollower src/pathFollower.cpp)
 
 # target_include_directories(pathFollower PUBLIC
@@ -50,12 +65,25 @@ ament_target_dependencies(pathFollower rclcpp std_msgs sensor_msgs nav_msgs geom
 install(TARGETS
   localPlanner
   pathFollower
+  planar_mpc_test
   DESTINATION lib/${PROJECT_NAME})
+
+install(PROGRAMS python/local_planner_node.py
+  DESTINATION lib/${PROJECT_NAME} RENAME astribotCoordinator)
+install(FILES python/local_planner_core.py python/navigation_feedback.py
+  DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/run_astribot.sh DESTINATION lib/${PROJECT_NAME})
+add_test(NAME planner_python COMMAND ${Python3_EXECUTABLE} -m pytest -q
+  -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/test)
+set_tests_properties(planner_python PROPERTIES
+  ENVIRONMENT "PYTHONNOUSERSITE=1;OPENBLAS_NUM_THREADS=1;ROS_LOG_DIR=/tmp/local-planner-ctest")
 
 install(
   DIRECTORY
   launch
   paths
+  config
+  docs
   DESTINATION share/${PROJECT_NAME}
 )
 

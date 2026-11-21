@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <chrono>
 #include <iostream>
+#include "local_planner/mpc_ros.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -14,6 +15,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 
@@ -35,6 +37,10 @@ const double PI = 3.1415926;
 
 // ---------------- Parameters (kept) ----------------
 string pathFolder;
+string vehicleFrame = "base_link";
+bool requireStampedGoal = false;
+bool haveGoal = false;
+builtin_interfaces::msg::Time goalStamp, scanStamp;
 double vehicleLength = 0.4;     // 40cm quad
 double vehicleWidth  = 0.4;     // 40cm quad
 double sensorOffsetX = 0.0;
@@ -132,11 +138,22 @@ rclcpp::Node::SharedPtr nh;
 
 void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
 {
+  if (requireStampedGoal && (goal->header.frame_id != vehicleFrame ||
+      !std::isfinite(goal->point.x) || !std::isfinite(goal->point.y))) {
+    haveGoal = false;
+    return;
+  }
   goalX = goal->point.x;
   goalY = goal->point.y;
+  goalStamp = goal->header.stamp;
+  haveGoal = true;
 }
 
 void laserScanHandler(const sensor_msgs::msg::LaserScan::ConstSharedPtr scan) {
+  if (requireStampedGoal && (scan->header.frame_id != vehicleFrame ||
+      !std::isfinite(scan->angle_min) || !std::isfinite(scan->angle_increment) ||
+      scan->angle_increment <= 0.0 || scan->ranges.size() > 10000)) return;
+  scanStamp = scan->header.stamp;
   laserCloud->clear();
   laserCloudCrop->clear();
 
@@ -291,8 +308,23 @@ int main(int argc, char** argv)
   rclcpp::init(argc, argv);
   nh = rclcpp::Node::make_shared("localPlanner");
 
+  const auto backend=nh->declare_parameter<std::string>("planner_backend", "mpc");
+  if (backend=="mpc") {
+    local_planner::MpcRos mpc(nh);
+    rclcpp::spin(nh);
+    rclcpp::shutdown();
+    return 0;
+  }
+  if (backend!="library") {
+    RCLCPP_ERROR(nh->get_logger(), "planner_backend must be mpc or library");
+    rclcpp::shutdown();
+    return 2;
+  }
+
   // Parameters (trimmed: no joystick/terrain)
   nh->declare_parameter<std::string>("pathFolder", pathFolder);
+  vehicleFrame = nh->declare_parameter<std::string>("vehicleFrame", "base_link");
+  requireStampedGoal = nh->declare_parameter<bool>("requireStampedGoal", false);
   nh->declare_parameter<double>("vehicleLength", vehicleLength);
   nh->declare_parameter<double>("vehicleWidth", vehicleWidth);
   nh->declare_parameter<double>("sensorOffsetX", sensorOffsetX);
@@ -348,6 +380,8 @@ int main(int argc, char** argv)
   // auto subOdometry = nh->create_subscription<nav_msgs::msg::Odometry>("/odom", 5, odometryHandler);
   auto subLaser    = nh->create_subscription<sensor_msgs::msg::LaserScan>("/scan", rclcpp::SensorDataQoS(), laserScanHandler);
   auto subGoal     = nh->create_subscription<geometry_msgs::msg::PointStamped>("/way_point", 5, goalHandler);
+  auto subCancel = nh->create_subscription<std_msgs::msg::Empty>("/planner_cancel", 5,
+    [](std_msgs::msg::Empty::ConstSharedPtr) { haveGoal = false; newLaserCloud = false; });
 
   auto pubPath = nh->create_publisher<nav_msgs::msg::Path>("/path", 5);
   nav_msgs::msg::Path path;
@@ -363,16 +397,16 @@ int main(int argc, char** argv)
     path.poses[0].pose.position.x = 0;
     path.poses[0].pose.position.y = 0;
     path.poses[0].pose.position.z = 0;
-    path.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-    path.header.frame_id = "base_link";
+    path.header.stamp = scanStamp;
+    path.header.frame_id = vehicleFrame;
     pubPath->publish(path);
 
 #if PLOTPATHSET == 1
     freePaths->clear();
     sensor_msgs::msg::PointCloud2 freePaths2;
     pcl::toROSMsg(*freePaths, freePaths2);
-    freePaths2.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-    freePaths2.header.frame_id = "base_link";
+    freePaths2.header.stamp = scanStamp;
+    freePaths2.header.frame_id = vehicleFrame;
     pubFreePaths->publish(freePaths2);
 #endif
   };
@@ -402,7 +436,7 @@ int main(int argc, char** argv)
   while (status) {
     rclcpp::spin_some(nh);
 
-    if (newLaserCloud) {
+    if (newLaserCloud && (!requireStampedGoal || (haveGoal && goalStamp == scanStamp))) {
       newLaserCloud = false;
 
       // stack (single scan kept for compatibility)
@@ -577,8 +611,8 @@ int main(int argc, char** argv)
             }
           }
 
-          path.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-          path.header.frame_id = "base_link";
+          path.header.stamp = scanStamp;
+          path.header.frame_id = vehicleFrame;
           pubPath->publish(path);
 
 #if PLOTPATHSET == 1
@@ -615,8 +649,8 @@ int main(int argc, char** argv)
           }
           sensor_msgs::msg::PointCloud2 freePaths2;
           pcl::toROSMsg(*freePaths, freePaths2);
-          freePaths2.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-          freePaths2.header.frame_id = "base_link";
+          freePaths2.header.stamp = scanStamp;
+          freePaths2.header.frame_id = vehicleFrame;
           pubFreePaths->publish(freePaths2);
 #endif
           pathFound = true;

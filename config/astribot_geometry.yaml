@@ -1,0 +1,9 @@
+# Nominal S1 geometry, not per-robot collision calibration.
+# Same observation contract as XPolicy's robot-owned observation_frames.yml.
+# Model commit: Astribot-Dev/astribot_descriptions 32b67e270fecd49bd5444ca49824dcc171dfb3e6
+# model_from_front_lidar xyz=[0.17393,0.16893,0.073397], yaw=-45 deg.
+# SDK weld_to_base adds z=0.097 exactly once. Values below are already composed.
+# Check against the robot profile when changing mounts; do not add the weld twice.
+base_from_front_lidar:
+  xyz: [0.17393, 0.16893, 0.170397]
+  xyzw: [0, 0, -0.3826834, 0.9238796]
