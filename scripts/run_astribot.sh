@@ -5,6 +5,7 @@ PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH=false
 MODE=run
 BACKEND=
+PYTHON_DEBUG=true
 for arg in "$@"; do
   case "$arg" in
     --dispatch) DISPATCH=true ;;
@@ -12,10 +13,13 @@ for arg in "$@"; do
     --dry-run) MODE=preview ;;
     --planner=mpc) BACKEND=mpc ;;
     --planner=library) BACKEND=library ;;
-    *) echo "Usage: $0 [--dispatch] [--planner=mpc|library] [--check|--dry-run]" >&2; exit 2 ;;
+    --python-debug) PYTHON_DEBUG=true ;;
+    --cpp) PYTHON_DEBUG=false ;;
+    *) echo "Usage: $0 [--dispatch] [--planner=mpc|library] [--python-debug|--cpp] [--check|--dry-run]" >&2; exit 2 ;;
   esac
 done
-COMMAND=(/opt/ros/humble/bin/ros2 launch local_planner astribot.launch.py "dispatch:=${DISPATCH}")
+COMMAND=(/opt/ros/humble/bin/ros2 launch local_planner astribot.launch.xml "dispatch:=${DISPATCH}")
+COMMAND+=("python_debug:=${PYTHON_DEBUG}")
 [[ -z "${BACKEND}" ]] || COMMAND+=("planner_backend:=${BACKEND}")
 if [[ "${MODE}" == preview ]]; then
   printf 'ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 '
@@ -45,14 +49,17 @@ unset AMENT_CURRENT_PREFIX
 set -u
 if [[ "${MODE}" == check ]]; then
   "${COMMAND[@]}" --show-args
-  /usr/bin/python3 - "${PREFIX}/lib/local_planner" <<'PY'
+  "${PREFIX}/lib/local_planner/astribotCoordinator" --check
+  if [[ "$PYTHON_DEBUG" == true ]]; then
+    /usr/bin/python3 - "${PREFIX}/lib/local_planner" <<'PY'
 import sys, runpy
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from local_planner.msg import MpcRequest, MpcResult
-runpy.run_path(str(Path(sys.argv[1]) / 'astribotCoordinator'), run_name='dependency_check')
+runpy.run_path(str(Path(sys.argv[1]) / 'astribotCoordinatorPython'), run_name='dependency_check')
 PY
+  fi
   "${PREFIX}/lib/local_planner/planar_mpc_test"
+  "${PREFIX}/lib/local_planner/astribot_core_test"
   echo 'Package dependencies and installed launch checked; no ROS nodes started.'
   exit 0
 fi

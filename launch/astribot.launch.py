@@ -30,8 +30,8 @@ def components(context):
                                    ('/mpc_request', PREFIX + '/mpc_request'),
                                    ('/mpc_result', PREFIX + '/mpc_result')])
     nodes = [planner]
-    follower = Node(package='local_planner', executable='astribotCoordinator',
-                    name='astribot_local_planner', output='screen', parameters=[{
+    follower = Node(package='local_planner', executable='astribotCoordinatorPython',
+                    name='astribot_local_planner', output='screen', parameters=[str(ROOT / 'config/astribot.yaml'), {
                         'dispatch': ParameterValue(LaunchConfiguration('dispatch'), value_type=bool),
                         'planner_backend': backend}])
     nodes.append(follower)

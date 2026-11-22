@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build and verify this package only. No ROS nodes or hardware startup.
+# Build/verify only. Native coordinator tests use isolated domain228 shadow nodes;
+# no robot owner, hardware startup, or live-domain publishing.
 set -euo pipefail
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="${LOCAL_PLANNER_WORKSPACE:-$(cd "${PACKAGE_ROOT}/../.." && pwd)}"

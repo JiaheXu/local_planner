@@ -27,7 +27,9 @@ def boundary(monkeypatch):
     transport = SimpleNamespace(publish=lambda msg: None)
     commands = []
     state = SimpleNamespace(backend='mpc', mpc_epoch=1, mpc_last_stamp=0,
-        mpc_received=-float('inf'), mpc_velocity=(0.,0.), mpc_solve_ms=None,
+        selected_lidar='front', collision_checks_enabled=True, collision_inputs={}, nav=SimpleNamespace(stamp=1_000_000_000),
+        mpc_received=-float('inf'), mpc_wait_started=10., mpc_wait_reason='first result',
+        mpc_velocity=(0.,0.), mpc_solve_ms=None,
         mpc_requests={1000000000: ((0.,0.,0.),10.,1,(0.,0.))},
         session=PathSession(), sequence=GoalSequence(), snapshots={}, started=10.,
         commands=SimpleNamespace(publish=commands.append), cancels=transport, paths=transport,
@@ -60,6 +62,70 @@ def test_cpp_result_passes_current_gates(boundary):
     state,result,_=boundary
     state.mpc_result(result)
     assert state.mpc_drive((0.,0.,0.),10.05)==(.014,0.)
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_collision_switch_controls_obstacles_for_planning(boundary, enabled):
+    import local_planner_node as module
+    state, _, _ = boundary
+    sample = SimpleNamespace(points=np.array([[.35,0.]]), stamp=123, received=10.)
+    state.collision_inputs['front'] = sample
+    state.collision_checks_enabled = enabled
+    module.LocalPlanner.use_collision_sample(state)
+    assert len(state.points) == (1 if enabled else 0)
+    assert len(sample.points) == 1  # Retain raw geometry for diagnostics.
+    assert state.cloud_stamp == 123 and state.cloud_received == 10.
+
+
+def test_cloud_cadence_jitter_does_not_cancel_drive(boundary, monkeypatch):
+    """148 ms cloud gap plus request/result work can cross the 150 ms timer."""
+    import local_planner_node as module
+    state, result, commands = boundary
+    state.mpc_result(result)  # First request at 10.0, accepted at 10.05.
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.18)
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is not None
+    assert commands[-1].linear.x > 0.
+    # A fresh reply for the next cloud replaces the cached command normally.
+    result.header.stamp.nanosec = 148_000_000
+    state.mpc_requests[1_148_000_000] = ((0.,0.,0.),10.148,1,(0.,0.))
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.19)
+    state.mpc_result(result)
+    assert state.session.goal is not None
+    assert state.mpc_received == 10.148
+
+
+def test_cached_command_boundary_keeps_request_age(boundary):
+    state, result, _ = boundary
+    state.mpc_result(result)
+    assert state.mpc_drive((0.,0.,0.),10.25)==(.014,0.)
+    with pytest.raises(ValueError, match='expired'):
+        state.mpc_drive((0.,0.,0.),10.250001)
+
+
+def test_reply_still_must_arrive_within_150_ms(boundary, monkeypatch):
+    import local_planner_node as module
+    state, result, commands = boundary
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 10.151)
+    state.mpc_result(result)
+    assert state.session.goal is None
+    assert 'result expired' in state.session.reason
+    assert commands[-1].linear.x == 0.
+
+
+def test_expiry_during_tick_cannot_publish_nonzero(boundary,monkeypatch):
+    import local_planner_node as module
+    state,result,commands=boundary
+    state.mpc_result(result)
+    calls=[]
+    def clock():
+        calls.append(None)
+        return 10.24 if len(calls)==1 else 10.26
+    monkeypatch.setattr(module.time,'monotonic',clock)
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is None
+    assert 'expired before dispatch' in state.session.reason
+    assert commands and all((m.linear.x,m.linear.y,m.angular.z)==(0.,0.,0.) for m in commands)
 
 
 @pytest.mark.parametrize('failure', ['solver','late','speed','nonfinite','deadline','frame','owner'])
@@ -109,7 +175,57 @@ def test_missing_and_stale_cpp_results_are_not_commands(boundary):
     state,result,_=boundary
     with pytest.raises(ValueError, match='missing'): state.mpc_drive((0.,0.,0.),10.6)
     state.mpc_result(result)
-    with pytest.raises(ValueError, match='expired'): state.mpc_drive((0.,0.,0.),10.2)
+    with pytest.raises(ValueError, match='expired'): state.mpc_drive((0.,0.,0.),10.26)
+
+
+def test_mid_drive_invalidation_waits_for_new_result(boundary, monkeypatch):
+    import local_planner_node as module
+    state, result, commands = boundary
+    state.started = 1.  # Drive phase started long before this recent reply.
+    state.mpc_result(result)
+    old_reply = result
+    state.points = np.array([[.60,0.]])  # Obstruct the prediction, not the origin.
+    state.cloud_stamp += 1
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is not None and commands[-1].linear.x == 0.
+    monkeypatch.setattr(module.time, 'monotonic', lambda:10.10)
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is not None, state.session.reason
+    assert commands[-1].linear.x == 0.
+    # Cleared prediction and replies from its old epoch cannot restart motion.
+    state.mpc_result(old_reply)
+    assert state.mpc_received == -float('inf')
+    state.points = np.empty((0,2))
+    result.epoch = state.mpc_epoch
+    state.mpc_requests[1_000_000_000] = ((0.,0.,0.),10.10,state.mpc_epoch,(0.,0.))
+    monkeypatch.setattr(module.time, 'monotonic', lambda:10.15)
+    state.mpc_result(result)
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is not None and commands[-1].linear.x > 0.
+
+
+def test_repeated_collision_checks_do_not_reset_wait_or_discard_inflight(boundary, monkeypatch):
+    import local_planner_node as module
+    state, result, commands = boundary
+    state.started = 1.
+    state.mpc_result(result)
+    state.points = np.array([[.35,0.]])  # Both collision gates will reject.
+    state.cloud_stamp += 1
+    module.LocalPlanner.tick(state)
+    epoch = state.mpc_epoch
+    state.mpc_requests[2_000_000_000] = ((0.,0.,0.),10.08,epoch,(0.,0.))
+    for now in (10.10,10.20,10.40):
+        monkeypatch.setattr(module.time, 'monotonic', lambda:now)
+        module.LocalPlanner.tick(state)
+        assert state.session.goal is not None, state.session.reason
+        assert state.mpc_epoch == epoch
+        assert 2_000_000_000 in state.mpc_requests
+        assert commands[-1].linear.x == 0.
+    monkeypatch.setattr(module.time, 'monotonic', lambda:10.56)
+    module.LocalPlanner.tick(state)
+    assert state.session.goal is None and commands[-1].linear.x == 0.
+    assert 'result missing' in state.session.reason
+    assert 'new cloud invalidated' in state.session.reason
 
 
 @pytest.mark.parametrize('samples',[1,21])
@@ -176,11 +292,20 @@ def test_launcher_defaults_to_mpc_and_allows_explicit_library():
     script=str(ROOT/'scripts/run_astribot.sh')
     config=yaml.safe_load((ROOT/'config/astribot.yaml').read_text())
     assert config['/**']['ros__parameters']['planner_backend']=='mpc'
+    assert config['/**']['ros__parameters']['collision_lidar']=='rear'
     for args,backend in [([],'mpc'),(['--planner=library'],'library')]:
         result=subprocess.run(['bash',script,'--dry-run',*args],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
-        assert 'ros2 launch local_planner astribot.launch.py' in result.stdout
+        assert 'ros2 launch local_planner astribot.launch.xml' in result.stdout
         assert 'dispatch:=false' in result.stdout
+        assert 'python_debug:=true' in result.stdout
         if args:
             assert 'planner_backend:='+backend in result.stdout
     assert subprocess.run(['bash',script,'--planner=unknown'],capture_output=True).returncode==2
+
+
+def test_cpp_coordinator_requires_explicit_selection():
+    script=str(ROOT/'scripts/run_astribot.sh')
+    result=subprocess.run(['bash',script,'--dry-run','--cpp'],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert 'python_debug:=false' in result.stdout

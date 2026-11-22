@@ -14,7 +14,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.parameter import Parameter
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu, PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Empty
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 
@@ -23,14 +23,17 @@ SHARE = Path(get_package_share_directory('local_planner'))
 INSTALL = Path(get_package_prefix('local_planner'))
 sys.path.insert(0, str(ROOT / 'python'))
 from local_planner_core import front_mount
-from local_planner_node import LocalPlanner, PREFIX, FRONT, FRONT_IMU, REAR_IMU, ODOM
+from local_planner_node import LocalPlanner, PREFIX, FRONT, REAR, ODOM
 
 
 def main():
     assert os.environ.get('ROS_DOMAIN_ID') == '227'
     parser = argparse.ArgumentParser()
     parser.add_argument('--planner', choices=['mpc', 'library'], default='mpc')
-    backend = parser.parse_args().planner
+    parser.add_argument('--lidar', choices=['front', 'rear'], default='front')
+    parser.add_argument('--without-collision-checks', action='store_true')
+    options = parser.parse_args()
+    backend, lidar = options.planner, options.lidar
     binary = INSTALL / 'lib/local_planner/localPlanner'
     arguments = [str(binary), '--ros-args', '--params-file', str(SHARE / 'config/astribot.yaml'),
                  '-p', 'pathFolder:=' + str(SHARE / 'paths'),
@@ -43,14 +46,14 @@ def main():
     child = subprocess.Popen(arguments, stdout=log, stderr=subprocess.STDOUT)
     rclpy.init()
     source = rclpy.create_node('synthetic_local_planner_inputs')
-    adapter = LocalPlanner(parameter_overrides=[Parameter('planner_backend', value=backend)])
+    adapter = LocalPlanner(parameter_overrides=[Parameter('planner_backend', value=backend),
+        Parameter('python_collision_checks_enabled', value=not options.without_collision_checks),
+        Parameter('collision_lidar', value='auto' if lidar=='front' else 'rear')])
     executor = SingleThreadedExecutor()
     executor.add_node(source)
     executor.add_node(adapter)
     odom_pub = source.create_publisher(Odometry, ODOM, qos_profile_sensor_data)
-    cloud_pub = source.create_publisher(PointCloud2, FRONT, qos_profile_sensor_data)
-    imu_pubs = [source.create_publisher(Imu, topic, qos_profile_sensor_data)
-                for topic in (FRONT_IMU, REAR_IMU)]
+    cloud_pub = source.create_publisher(PointCloud2, FRONT if lidar=='front' else REAR, qos_profile_sensor_data)
     goal_pub = source.create_publisher(PoseStamped, '/astribot_viz/goal_pose', 1)
     cancel_pub = source.create_publisher(Empty, '/astribot_viz/goal_cancel', 1)
     commands = []
@@ -62,25 +65,19 @@ def main():
                                command, 1)
     state = dict(x=0., y=0., yaw=0., obstacle=False, cloud=True, odom=True, move=False, invalid=False)
     phase_commands = []
-    last_imu, last_cloud = 0., 0.
+    last_cloud = 0.
     mount = front_mount()
 
     def stamp(target, ns):
         target.sec, target.nanosec = divmod(ns, 1_000_000_000)
 
     def drive(seconds, until=lambda: False, planner_alive=True):
-        nonlocal last_imu, last_cloud
+        nonlocal last_cloud
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             assert not planner_alive or child.poll() is None, Path(log.name).read_text()
             now = time.monotonic()
             ns = source.get_clock().now().nanoseconds + 37_000_000_000
-            if now - last_imu >= .005:
-                imu = Imu()
-                stamp(imu.header.stamp, ns)
-                for pub in imu_pubs:
-                    pub.publish(imu)
-                last_imu = now
             if now - last_cloud >= .1:
                 if state['odom']:
                     if state['move'] and commands:
@@ -136,9 +133,35 @@ def main():
         drive(3.)
         assert adapter.count_publishers('/cmd_vel') == 0
         assert commands and all(v == (0., 0.) for v in commands)
+        if options.without_collision_checks:
+            assert adapter.collision_checks_enabled is False
+            state['obstacle'] = True
+            drive(.4)
+            goal()
+            drive(3.)
+            assert adapter.session.goal is not None and commands[-1][0] > 0., adapter.session.reason
+            assert len(adapter.points) == 0 and len(adapter.collision_inputs[lidar].points) > 0
+            print('PASS: Python ignores synthetic obstacles for MPC and dispatch; raw cloud retained')
+            cancel_pub.publish(Empty())
+            drive(.2)
+            assert adapter.session.goal is None and commands[-1] == (0.,0.)
+            print('PASS: collision bypass retains operator cancel')
+            goal()
+            drive(2., until=lambda: any(v[0] > 0. for v in commands))
+            assert any(v[0] > 0. for v in commands), adapter.session.reason
+            state['odom'] = False
+            drive(.5)
+            assert adapter.session.goal is None and commands[-1] == (0.,0.)
+            print('PASS: collision bypass retains odometry-loss stop; no live cmd_vel publisher')
+            return
         goal()
         drive(2., until=lambda: any(v[0] > 0. for v in commands))
         assert any(v[0] > 0. for v in commands), adapter.session.reason
+        assert adapter.selected_lidar==lidar
+        if lidar=='rear':
+            assert adapter.count_publishers(FRONT)==0
+        assert adapter.count_subscribers('/sdk/astribot_lidar/front_imu')==0
+        assert adapter.count_subscribers('/sdk/astribot_lidar/back_imu')==0
         cancel_pub.publish(Empty())
         drive(.2)
         commands.clear()
@@ -151,7 +174,7 @@ def main():
         goal()
         drive(1.)
         assert commands and all(v[0] == 0. for v in commands), commands
-        print('PASS: front obstacle prevents forward commands')
+        print(f'PASS: {lidar} obstacle prevents forward commands')
         cancel_pub.publish(Empty())
         state['obstacle'] = False
         drive(.4)
@@ -159,7 +182,7 @@ def main():
         drive(2., until=lambda: any(v[0] > 0. for v in commands))
         assert any(v[0] > 0. for v in commands), adapter.session.reason
         state['cloud'] = False
-        drive(.5)
+        drive(.8)
         assert adapter.session.goal is None
         commands.clear()
         drive(.2)

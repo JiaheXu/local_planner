@@ -19,6 +19,8 @@ include_directories(include include/nlohmann)
 
 find_package(ament_cmake REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(ament_index_cpp REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)
@@ -49,6 +51,21 @@ target_link_libraries(planar_mpc_test Eigen3::Eigen)
 enable_testing()
 add_test(NAME planar_mpc COMMAND planar_mpc_test)
 add_executable(pathFollower src/pathFollower.cpp)
+add_executable(astribotCoordinator src/astribotCoordinator.cpp)
+target_link_libraries(astribotCoordinator Eigen3::Eigen yaml-cpp "${cpp_typesupport_target}")
+ament_target_dependencies(astribotCoordinator rclcpp ament_index_cpp std_msgs sensor_msgs nav_msgs geometry_msgs)
+add_executable(astribot_core_test test/astribot_core_test.cpp)
+target_link_libraries(astribot_core_test Eigen3::Eigen yaml-cpp)
+ament_target_dependencies(astribot_core_test rclcpp ament_index_cpp std_msgs sensor_msgs nav_msgs geometry_msgs)
+add_test(NAME astribot_core COMMAND astribot_core_test)
+add_executable(astribot_coordinator_test test/astribot_coordinator_test.cpp)
+target_link_libraries(astribot_coordinator_test Eigen3::Eigen yaml-cpp "${cpp_typesupport_target}")
+ament_target_dependencies(astribot_coordinator_test rclcpp ament_index_cpp std_msgs sensor_msgs nav_msgs geometry_msgs)
+add_test(NAME astribot_coordinator COMMAND astribot_coordinator_test)
+set_tests_properties(astribot_coordinator PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=228;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=/tmp/astribot-native-tests" TIMEOUT 45)
+add_executable(astribot_ros_smoke test/astribot_ros_smoke.cpp)
+target_link_libraries(astribot_ros_smoke Eigen3::Eigen)
+ament_target_dependencies(astribot_ros_smoke rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs)
 
 # target_include_directories(pathFollower PUBLIC
 #   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -66,17 +83,18 @@ install(TARGETS
   localPlanner
   pathFollower
   planar_mpc_test
+  astribotCoordinator
+  astribot_core_test
+  astribot_coordinator_test
+  astribot_ros_smoke
   DESTINATION lib/${PROJECT_NAME})
 
-install(PROGRAMS python/local_planner_node.py
-  DESTINATION lib/${PROJECT_NAME} RENAME astribotCoordinator)
-install(FILES python/local_planner_core.py python/navigation_feedback.py
-  DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/run_astribot.sh DESTINATION lib/${PROJECT_NAME})
-add_test(NAME planner_python COMMAND ${Python3_EXECUTABLE} -m pytest -q
-  -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/test)
-set_tests_properties(planner_python PROPERTIES
-  ENVIRONMENT "PYTHONNOUSERSITE=1;OPENBLAS_NUM_THREADS=1;ROS_LOG_DIR=/tmp/local-planner-ctest")
+install(PROGRAMS python/local_planner_node.py DESTINATION lib/${PROJECT_NAME} RENAME astribotCoordinatorPython)
+install(FILES python/local_planner_core.py python/navigation_feedback.py python/collision_feedback.py DESTINATION lib/${PROJECT_NAME})
+add_test(NAME planner_python COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/test)
+set_tests_properties(planner_python PROPERTIES ENVIRONMENT "PYTHONNOUSERSITE=1;PYTHONDONTWRITEBYTECODE=1;OPENBLAS_NUM_THREADS=1;ROS_LOG_DIR=/tmp/local-planner-ctest")
+install(PROGRAMS test/run_ros_smoke.sh DESTINATION share/${PROJECT_NAME}/test)
 
 install(
   DIRECTORY

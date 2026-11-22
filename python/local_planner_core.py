@@ -26,6 +26,15 @@ def front_mount():
     return result
 
 
+def rear_cloud_mount():
+    """Driver-transformed rear payload, not the physical rear sensor mount."""
+    path = Path(get_package_share_directory('local_planner')) / 'config/astribot_geometry.yaml'
+    coordinates = yaml.safe_load(path.read_text()).get('rear_cloud_coordinates')
+    if coordinates != 'front_lidar':
+        raise ValueError('Unqualified rear cloud coordinates; expected front_lidar contract')
+    return front_mount()
+
+
 def cloud_xyz(cloud):
     """Read explicit XYZ float32 fields, including organized rows and byte order."""
     if (not 0 < cloud.width * cloud.height <= 500000 or cloud.point_step < 12

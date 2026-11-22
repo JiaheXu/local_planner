@@ -310,9 +310,14 @@ int main(int argc, char** argv)
 
   const auto backend=nh->declare_parameter<std::string>("planner_backend", "mpc");
   if (backend=="mpc") {
-    local_planner::MpcRos mpc(nh);
-    rclcpp::spin(nh);
-    rclcpp::shutdown();
+    {
+      local_planner::MpcRos mpc(nh);
+      rclcpp::spin(nh);
+    }
+    // Destroy the global node before process-static DDS teardown. Leaving it
+    // for atexit dereferenced a destroyed Fast DDS participant on SIGTERM.
+    nh.reset();
+    if (rclcpp::ok()) rclcpp::shutdown();
     return 0;
   }
   if (backend!="library") {

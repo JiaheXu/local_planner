@@ -119,7 +119,8 @@ def test_dispatch_readiness_rejects_disabled_fault_changed_source_or_generation(
     state = SimpleNamespace(
         nav=SimpleNamespace(fields=lambda now: dict(position_navigation=[0., 0., 0.],
                             navigation_age_ms=10.), reference_stamp=100, stamp=100),
-        front_clock=SimpleNamespace(reference_problem=lambda now: None, reference_stamp=100),
+        selected_lidar='front', collision_inputs={'front': SimpleNamespace(
+            clock=SimpleNamespace(reference_stamp=100),problem=lambda now,stamp:None)},
         cloud_fault=False, cloud_error='', cloud_received=10., cloud_stamp=100,
         sources=lambda: ('one',), source_ids=('one',), dispatch=True,
         owner_status=status, owner_received=10., owner_generation=3)
@@ -187,12 +188,16 @@ def test_cloud_pose_skew_stops_both_rotation_stages(monkeypatch, goal):
     from types import SimpleNamespace, MethodType
     import local_planner_node as module
     from local_planner_core import GoalSequence, PathSession
+    from collision_feedback import CollisionCloud
+    sample = CollisionCloud('front', np.eye(4),
+        SimpleNamespace(reference_problem=lambda now:None,reference_stamp=1_250_000_000))
+    sample.error, sample.received, sample.stamp = '', 10., 1_000_000_000
     commands = []
     transport = SimpleNamespace(publish=lambda msg: None)
     state = SimpleNamespace(
         nav=SimpleNamespace(fields=lambda now: dict(position_navigation=[0., 0., 0.],
-            navigation_age_ms=10.), reference_stamp=1_250_000_000, stamp=1_210_000_000),
-        front_clock=SimpleNamespace(reference_problem=lambda now: None, reference_stamp=1_250_000_000),
+            navigation_age_ms=10.), reference_stamp=1_250_000_000, stamp=3_010_000_000),
+        selected_lidar='front',collision_checks_enabled=True,collision_inputs={'front':sample},
         cloud_fault=False, cloud_error='', cloud_received=10., cloud_stamp=1_000_000_000,
         sources=lambda: ('one',), source_ids=('one',), dispatch=False,
         session=PathSession(), sequence=GoalSequence(), snapshots={}, started=10.,

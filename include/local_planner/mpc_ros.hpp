@@ -6,7 +6,8 @@
 
 namespace local_planner {
 // Stateless requests carry goal epochs and previous *accepted* commands.
-// This node proposes commands only; the XPolicy adapter owns dispatch gating.
+// This node proposes commands only; the coordinator gates ROS dispatch and
+// XPolicy retains final hardware ownership and command validation.
 class MpcRos {
  public:
   explicit MpcRos(const rclcpp::Node::SharedPtr& node) : node_(node) {

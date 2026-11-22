@@ -2,6 +2,12 @@
   ros__parameters:
     # Drive-stage backend. Both backends retain initial/final in-place rotations.
     planner_backend: mpc
+    # Rear only: front timing must not affect goal selection or execution.
+    # Set auto to restore front-preferred/rear-fallback selection on restart.
+    collision_lidar: rear
+    # Temporary Python debugging mode: no obstacle avoidance. C++ ignores this
+    # Python-only option and always retains its collision checks.
+    python_collision_checks_enabled: false
     vehicleFrame: astribot_viz_chassis
     requireStampedGoal: true
     # URDF chassis collision cylinder radius=0.30 m; use fixed lattice radius=0.55 m.

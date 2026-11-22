@@ -4,6 +4,12 @@
 # model_from_front_lidar xyz=[0.17393,0.16893,0.073397], yaw=-45 deg.
 # SDK weld_to_base adds z=0.097 exactly once. Values below are already composed.
 # Check against the robot profile when changing mounts; do not add the weld twice.
+# Current vendor rear PointCloud2 payload is already transformed to front-LiDAR
+# coordinates (livox_frame); rear IMU remains in rear axes. Mirrors the explicit
+# observation_frames.yml contract, without importing XPolicy at runtime.
+# Requalify this convention after driver/calibration changes. Never substitute
+# the physical rear mount here: that would transform the cloud twice.
+rear_cloud_coordinates: front_lidar
 base_from_front_lidar:
   xyz: [0.17393, 0.16893, 0.170397]
   xyzw: [0, 0, -0.3826834, 0.9238796]

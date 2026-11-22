@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Front LiDAR / FAST-LIO / RViz adapter with MPC or path-library driving."""
+"""Rear-only (default) or automatic LiDAR selection + FAST-LIO MPC/library adapter."""
 from collections import OrderedDict
 from copy import deepcopy
 import json
@@ -12,18 +12,23 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Point, PointStamped, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import Imu, LaserScan, PointCloud2
+from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import Empty, String
 
-from local_planner_core import (FRAME, GoalSequence, PathSession, cloud_xyz, collision_free, follow,
-                                front_mount, obstacle_points, relative_goal, world_path)
+from local_planner_core import (FRAME, GoalSequence, PathSession, collision_free, follow,
+                                front_mount, rear_cloud_mount, relative_goal, world_path)
+from collision_feedback import CollisionCloud, choose_collision_source
 from navigation_feedback import NavigationFeedback, validate_navigation
 
 PREFIX = '/astribot/local_planner'
 FRONT = '/sdk/astribot_lidar/front_scan'
-FRONT_IMU = '/sdk/astribot_lidar/front_imu'
-REAR_IMU = '/sdk/astribot_lidar/back_imu'
+REAR = '/sdk/astribot_lidar/back_scan'
 ODOM = '/fast_lio/chassis/odometry'
+LIDAR_TOPICS = {'front': (FRONT,), 'rear': (REAR,)}
+# Reply latency and cached-command lifetime cover different intervals. Requests
+# follow 10 Hz clouds; allow scan jitter + processing + the 50 ms dispatch tick.
+MPC_RESULT_TIMEOUT_S = .15
+MPC_COMMAND_TIMEOUT_S = .25
 
 
 def stamp_ns(stamp):
@@ -34,6 +39,11 @@ class LocalPlanner(Node):
     def __init__(self, **kwargs):
         super().__init__('astribot_local_planner', **kwargs)
         self.dispatch = self.declare_parameter('dispatch', False).value
+        self.collision_checks_enabled = self.declare_parameter(
+            'python_collision_checks_enabled', True).value
+        self.collision_lidar = self.declare_parameter('collision_lidar', 'rear').value
+        if self.collision_lidar not in ('rear', 'auto'):
+            raise ValueError('collision_lidar must be rear or auto')
         self.backend = self.declare_parameter('planner_backend', 'mpc').value
         if self.backend not in ('mpc', 'library'):
             raise ValueError('planner_backend must be mpc or library')
@@ -42,12 +52,15 @@ class LocalPlanner(Node):
         self.last_command_time = time.monotonic()
         self.reset_mpc()
         self.mount = front_mount()
-        self.nav, self.front_clock = NavigationFeedback(), NavigationFeedback()
+        self.nav = NavigationFeedback()
+        self.collision_inputs = {
+            'front': CollisionCloud('front', self.mount, self.nav),
+            'rear': CollisionCloud('rear', rear_cloud_mount(), self.nav)}
+        self.selected_lidar = None
         self.session = PathSession()
         self.sequence = GoalSequence()
         self.snapshots = OrderedDict()
         self.cloud_stamp, self.cloud_received = 0, -math.inf
-        self.cloud_fault, self.cloud_error = False, 'waiting for front cloud'
         self.points = np.empty((0, 2))
         self.owner_status, self.owner_received = {}, -math.inf
         self.owner_generation = None
@@ -65,12 +78,12 @@ class LocalPlanner(Node):
             self.mpc_request_type = MpcRequest
             self.mpc_requests_pub = self.create_publisher(MpcRequest, PREFIX + '/mpc_request', 1)
             self.create_subscription(MpcResult, PREFIX + '/mpc_result', self.mpc_result, 1)
-        for topic, clock in [(REAR_IMU, self.nav), (FRONT_IMU, self.front_clock)]:
-            self.create_subscription(Imu, topic,
-                lambda msg, clock=clock: clock.receive_reference(msg, now=time.monotonic()),
-                qos_profile_sensor_data)
         self.create_subscription(Odometry, ODOM, self.odometry, qos_profile_sensor_data)
-        self.create_subscription(PointCloud2, FRONT, self.cloud, qos_profile_sensor_data)
+        for side, (topic,) in LIDAR_TOPICS.items():
+            if self.collision_lidar == 'rear' and side != 'rear':
+                continue
+            self.create_subscription(PointCloud2, topic,
+                lambda msg, side=side: self.cloud(msg, side), qos_profile_sensor_data)
         self.create_subscription(PoseStamped, '/astribot_viz/goal_pose', self.goal, 1)
         self.create_subscription(Empty, '/astribot_viz/goal_cancel', self.cancel, 1)
         if self.backend == 'library':
@@ -79,9 +92,13 @@ class LocalPlanner(Node):
         self.create_timer(.05, self.tick)
         self.get_logger().info(f'Local planner backend={self.backend}, output={self.output_topic}; '
                                'no automatic base enable')
+        if not self.collision_checks_enabled:
+            self.get_logger().warning('Python collision checks DISABLED: no obstacle avoidance')
 
-    def reset_mpc(self):
+    def reset_mpc(self, *, reason='first result after goal/phase reset'):
         self.mpc_epoch += 1
+        self.mpc_wait_started = time.monotonic()
+        self.mpc_wait_reason = reason
         self.mpc_requests = OrderedDict()
         self.mpc_last_stamp = 0
         self.mpc_velocity = (0., 0.)
@@ -101,8 +118,15 @@ class LocalPlanner(Node):
             self.owner_status = {}
         self.owner_received = time.monotonic()
 
+    def collision_publishers(self, side):
+        for topic in LIDAR_TOPICS[side]:
+            if len(self.get_publishers_info_by_topic(topic)) != 1:
+                raise ValueError(f'expected exactly one publisher: {topic}')
+
     def sources(self):
-        topics = [FRONT, FRONT_IMU, REAR_IMU, ODOM, self.output_topic]
+        if self.selected_lidar is None:
+            raise ValueError('collision LiDAR has not been selected')
+        topics = list(dict.fromkeys([*LIDAR_TOPICS[self.selected_lidar], ODOM, self.output_topic]))
         if self.backend == 'library':
             topics.append(PREFIX + '/path')
         else:
@@ -119,17 +143,12 @@ class LocalPlanner(Node):
 
     def ready(self, now):
         pose = validate_navigation(self.nav.fields(now))
-        if self.cloud_fault or self.cloud_error or not 0 <= now - self.cloud_received <= .25:
-            raise ValueError(self.cloud_error or 'front cloud stale or clock fault')
-        problem = self.front_clock.reference_problem(now)
+        if self.selected_lidar is None:
+            raise ValueError('collision LiDAR has not been selected')
+        sample = self.collision_inputs[self.selected_lidar]
+        problem = sample.problem(now, self.nav.stamp)
         if problem:
-            raise ValueError('front ' + problem)
-        if not -.1e9 <= self.front_clock.reference_stamp - self.cloud_stamp <= .3e9:
-            raise ValueError('front cloud source time is stale/future')
-        if abs(self.nav.reference_stamp - self.front_clock.reference_stamp) > .1e9:
-            raise ValueError('front/rear sensor clocks disagree')
-        if abs(self.nav.stamp - self.cloud_stamp) > .2e9:
-            raise ValueError('front cloud and FAST-LIO pose are not time-aligned')
+            raise ValueError(problem)
         identities = self.sources()
         if self.source_ids is not None and self.source_ids != identities:
             raise ValueError('publisher identity changed during goal')
@@ -159,6 +178,11 @@ class LocalPlanner(Node):
                     or abs(math.hypot(q.z, q.w) - 1.) > .001 or not -.05 <= age <= 2.):
                 raise ValueError('expected a fresh finite planar RViz goal in map')
             now = time.monotonic()
+            validate_navigation(self.nav.fields(now))
+            self.selected_lidar = choose_collision_source(
+                self.collision_inputs, now, self.nav.stamp, check_publishers=self.collision_publishers,
+                mode=self.collision_lidar)
+            self.use_collision_sample()
             pose = self.ready(now)
             local = relative_goal((p.x, p.y), pose)
             if np.linalg.norm(local) > 3.:
@@ -169,7 +193,7 @@ class LocalPlanner(Node):
             self.sequence.begin((p.x, p.y), 2 * math.atan2(q.z, q.w))
             self.started = now
             self.get_logger().info('Goal accepted: turn toward goal, follow path, align target yaw; '
-                                   'tolerances 0.03 m / 0.05 rad')
+                                   f'collision_lidar={self.selected_lidar}; tolerances 0.03 m / 0.05 rad')
         except ValueError as exc:
             self.cancel(reason=str(exc))
             self.get_logger().warning(str(exc))
@@ -180,6 +204,7 @@ class LocalPlanner(Node):
         self.session.cancel(reason)
         self.snapshots.clear()
         self.source_ids, self.owner_generation = None, None
+        self.selected_lidar = None
         self.commands.publish(Twist())
         self.last_translation = (0., 0.)
         self.last_command_time = time.monotonic()
@@ -188,25 +213,27 @@ class LocalPlanner(Node):
         empty.header.frame_id = 'map'
         self.paths.publish(empty)
 
-    def cloud(self, msg):
+    def use_collision_sample(self):
+        sample = self.collision_inputs[self.selected_lidar]
+        # Python-only debugging switch. All proposal and dispatch collision checks
+        # consume this view; keep the original observation and timing validation.
+        self.points = sample.points if self.collision_checks_enabled else np.empty((0, 2))
+        self.cloud_stamp, self.cloud_received = sample.stamp, sample.received
+
+    def cloud(self, msg, side='front'):
         now = time.monotonic()
+        sample = self.collision_inputs[side]
+        sample.receive(msg, now=now)
+        # Other sensors cannot overwrite collision data, invalidate predictions,
+        # or resurrect a cancelled goal. Source selection is pinned per goal.
+        if self.selected_lidar != side:
+            return
         try:
-            if self.cloud_fault:
-                raise ValueError('front clock fault latched; restart after checking timing')
-            stamp = stamp_ns(msg.header.stamp)
-            if stamp <= self.cloud_stamp:
-                self.cloud_fault = True
-                raise ValueError('front cloud timestamp did not advance')
-            if msg.header.frame_id != 'livox_frame':
-                raise ValueError('unqualified front cloud frame; expected livox_frame')
-            problem = self.front_clock.reference_problem(now)
+            problem = sample.problem(now, self.nav.stamp)
             if problem:
                 raise ValueError(problem)
-            if not -.1e9 <= self.front_clock.reference_stamp - stamp <= .3e9:
-                raise ValueError('front cloud timestamp stale/future relative to front IMU')
-            points = obstacle_points(cloud_xyz(msg), self.mount)
-            self.points, self.cloud_stamp, self.cloud_received = points, stamp, now
-            self.cloud_error = ''
+            self.use_collision_sample()
+            points, stamp = self.points, self.cloud_stamp
             if self.session.goal is None or self.sequence.phase != 'drive':
                 return
             pose = self.ready(now)
@@ -247,7 +274,6 @@ class LocalPlanner(Node):
             scan.ranges = ranges.tolist()
             self.scans.publish(scan)
         except (ValueError, TypeError) as exc:
-            self.cloud_error = str(exc)
             if self.session.goal is not None:
                 self.cancel(reason=str(exc))
 
@@ -287,7 +313,7 @@ class LocalPlanner(Node):
         try:
             now = time.monotonic()
             self.ready(now)
-            if epoch != result.epoch or not 0 <= now - received <= .15:
+            if epoch != result.epoch or not 0 <= now - received <= MPC_RESULT_TIMEOUT_S:
                 raise ValueError('C++ MPC result expired or goal epoch changed')
             if not result.success:
                 raise ValueError('C++ MPC failed: ' + result.error)
@@ -333,10 +359,10 @@ class LocalPlanner(Node):
 
     def mpc_drive(self, pose, now):
         if self.mpc_received == -math.inf:
-            if now - self.started > .5:
-                raise ValueError('C++ MPC result missing')
+            if now - self.mpc_wait_started > .5:
+                raise ValueError('C++ MPC result missing: ' + self.mpc_wait_reason)
             return (0., 0.)
-        if not 0 <= now - self.mpc_received <= .15:
+        if not 0 <= now - self.mpc_received <= MPC_COMMAND_TIMEOUT_S:
             raise ValueError('C++ MPC command expired')
         if self.mpc_cloud_stamp != self.cloud_stamp:
             # The timer runs faster than optimization. New returns must invalidate
@@ -345,7 +371,7 @@ class LocalPlanner(Node):
                                [relative_goal(xy, pose) for xy in self.mpc_path]])
             if any(np.any(np.linalg.norm(self.points - center, axis=1) < .55 - 1e-5)
                    for center in local):
-                self.reset_mpc()
+                self.reset_mpc(reason='new cloud invalidated MPC prediction')
                 self.session.reason = 'blocked: new cloud invalidated MPC prediction'
                 return (0., 0.)
             self.mpc_cloud_stamp = self.cloud_stamp
@@ -389,7 +415,10 @@ class LocalPlanner(Node):
                         # reversal. Check the actual command through owner expiry.
                         if not collision_free(vx, 0., self.points, vy=vy, clearance=.55, horizon=.2):
                             vx, vy = 0., 0.
-                            self.reset_mpc()
+                            # While waiting, preserve the current epoch/request and
+                            # its deadline. Repeated checks must not starve replies.
+                            if self.mpc_received != -math.inf:
+                                self.reset_mpc(reason='dispatched MPC clearance')
                             self.session.reason = 'blocked: dispatched MPC clearance'
                     elif not self.session.valid(now):
                         if now - self.started > .5:
@@ -401,8 +430,21 @@ class LocalPlanner(Node):
                 # The same collision gate covers both in-place rotations and path following.
                 if self.session.goal is not None and not collision_free(vx, wz, self.points, vy=vy):
                     vx, vy, wz = 0., 0., 0.
-                    self.reset_mpc()
-                    self.session.reason = 'blocked: front collision envelope'
+                    if self.mpc_received != -math.inf:
+                        self.reset_mpc(reason=f'{self.selected_lidar} collision envelope')
+                    self.session.reason = f'blocked: {self.selected_lidar} collision envelope'
+            except ValueError as exc:
+                self.cancel(reason=str(exc))
+                vx, vy, wz = 0., 0., 0.
+        if vx != 0. or vy != 0. or wz != 0.:
+            try:
+                send_time = time.monotonic()
+                self.ready(send_time)
+                if self.sequence.phase == 'drive':
+                    if self.backend == 'mpc' and not 0 <= send_time - self.mpc_received <= MPC_COMMAND_TIMEOUT_S:
+                        raise ValueError('C++ MPC command expired before dispatch')
+                    if self.backend == 'library' and not self.session.valid(send_time):
+                        raise ValueError('local path expired before dispatch')
             except ValueError as exc:
                 self.cancel(reason=str(exc))
                 vx, vy, wz = 0., 0., 0.
@@ -414,7 +456,12 @@ class LocalPlanner(Node):
         self.status.publish(String(data=json.dumps(dict(
             active=self.session.goal is not None, phase=self.sequence.phase, reason=self.session.reason,
             dispatch=self.dispatch, output_topic=self.output_topic, planner_backend=self.backend,
+            collision_checks_enabled=self.collision_checks_enabled,
             mpc_solve_ms=self.mpc_solve_ms,
+            collision_lidar=self.selected_lidar,
+            collision_topic=LIDAR_TOPICS[self.selected_lidar][0] if self.selected_lidar else None,
+            collision_input_errors={side:sample.problem(now,self.nav.stamp)
+                                    for side,sample in self.collision_inputs.items()},
             command=[vx, vy, wz], owner_stop_confirmed=self.owner_status.get('stop_confirmed')))))
 
 

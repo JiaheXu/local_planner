@@ -8,7 +8,7 @@ from ament_index_python.packages import get_package_prefix, get_package_share_di
 
 def test_installed_coordinator_dependencies_without_xpolicy(tmp_path):
     prefix = Path(get_package_prefix('local_planner'))
-    program = prefix / 'lib/local_planner/astribotCoordinator'
+    program = prefix / 'lib/local_planner/astribotCoordinatorPython'
     environment = os.environ.copy()
     environment.pop('PYTHONPATH', None)
     # Only this package and ROS, no application checkout or Python environment.
@@ -29,5 +29,23 @@ def test_installed_coordinator_dependencies_without_xpolicy(tmp_path):
 def test_installed_launch_and_config_belong_to_package():
     share = Path(get_package_share_directory('local_planner'))
     assert (share / 'launch/astribot.launch.py').is_file()
+    assert (share / 'launch/astribot.launch.xml').is_file()
     assert (share / 'config/astribot.yaml').is_file()
     assert (share / 'config/astribot_geometry.yaml').is_file()
+
+
+def test_default_coordinator_is_native_and_backend_default_reads_yaml(tmp_path):
+    import yaml
+    prefix=Path(get_package_prefix('local_planner'))
+    program=prefix/'lib/local_planner/astribotCoordinator'
+    assert program.read_bytes()[:4]==b'\x7fELF'
+    marker=tmp_path/'share/ament_index/resource_index/packages/local_planner'
+    marker.parent.mkdir(parents=True);marker.write_text('')
+    config_dir=tmp_path/'share/local_planner/config';config_dir.mkdir(parents=True)
+    config=yaml.safe_load((Path(get_package_share_directory('local_planner'))/'config/astribot.yaml').read_text())
+    config['/**']['ros__parameters']['planner_backend']='library'
+    (config_dir/'astribot.yaml').write_text(yaml.safe_dump(config))
+    env=os.environ.copy();env['AMENT_PREFIX_PATH']=str(tmp_path)+os.pathsep+env.get('AMENT_PREFIX_PATH','')
+    result=subprocess.run([str(program),'--default-backend'],env=env,text=True,capture_output=True,timeout=5)
+    assert result.returncode==0,result.stderr
+    assert result.stdout=='library'
