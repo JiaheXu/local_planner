@@ -50,12 +50,12 @@ class CollisionCloud:
         return None
 
 
-def choose_collision_source(streams, now, odom_stamp, *, check_publishers=None, mode='auto'):
+def choose_collision_source(streams, now, odom_stamp, *, check_publishers=None, mode='front'):
     """Choose only at a goal boundary; publisher ambiguity always fails closed."""
-    if mode not in ('rear', 'auto'):
-        raise ValueError('collision_lidar must be rear or auto')
+    if mode not in ('front', 'rear', 'auto'):
+        raise ValueError('collision_lidar must be front, rear or auto')
     errors = []
-    for side in (('rear',) if mode == 'rear' else ('front', 'rear')):
+    for side in (('front', 'rear') if mode == 'auto' else (mode,)):
         problem = streams[side].problem(now, odom_stamp)
         if problem:
             errors.append(problem)

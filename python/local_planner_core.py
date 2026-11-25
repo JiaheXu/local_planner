@@ -116,8 +116,23 @@ def collision_free(vx, wz, points, *, vy=0., clearance=.40, horizon=2.):
     return True
 
 
+def limit_goal_velocity(velocity, pose, goal, tolerance=.03):
+    """Cap final XY speed at 0.6/s times distance (m), zero inside tolerance."""
+    if (len(velocity) != 2 or len(pose) != 3 or len(goal) != 2
+            or not all(math.isfinite(v) for v in (*velocity, *pose, *goal, tolerance))
+            or tolerance <= 0.):
+        raise ValueError('invalid terminal velocity/goal')
+    distance = math.hypot(goal[0]-pose[0], goal[1]-pose[1])
+    speed = math.hypot(*velocity)
+    if distance <= tolerance or speed == 0.:
+        return (0., 0.)
+    # Preserve direction and the optimizer's L1 speed envelope after rotation.
+    scale = min(1., min(.1, .6*distance)/speed, .1/sum(map(abs, velocity)))
+    return tuple(float(v)*scale for v in velocity)
+
+
 class GoalSequence:
-    """Face the destination, drive, then attain the requested map-frame yaw."""
+    """Translate to the goal, optionally face it first, then align map-frame yaw."""
     POSITION_TOLERANCE = .03
     YAW_TOLERANCE = .05
 
@@ -126,12 +141,18 @@ class GoalSequence:
 
     def cancel(self):
         self.goal, self.target_yaw, self.phase = None, None, 'idle'
+        self.reverse = False
+        self.face_goal = True
+        self.concurrent_yaw = False
 
-    def begin(self, goal, target_yaw):
+    def begin(self, goal, target_yaw, *, reverse=False, face_goal=True, concurrent_yaw=False):
         if len(goal) != 2 or not all(math.isfinite(v) for v in (*goal, target_yaw)):
             raise ValueError('invalid goal position or yaw')
         self.goal, self.target_yaw = tuple(goal), target_yaw
-        self.phase = 'rotate_to_goal'
+        self.reverse = reverse
+        self.face_goal = face_goal
+        self.concurrent_yaw = concurrent_yaw
+        self.phase = 'rotate_to_goal' if face_goal and not concurrent_yaw else 'drive'
 
     def update(self, pose):
         if self.goal is None:
@@ -140,14 +161,19 @@ class GoalSequence:
             raise ValueError('invalid navigation pose')
         dx, dy = self.goal[0] - pose[0], self.goal[1] - pose[1]
         near = math.hypot(dx, dy) <= self.POSITION_TOLERANCE
+        if self.concurrent_yaw:
+            error = math.atan2(math.sin(self.target_yaw-pose[2]), math.cos(self.target_yaw-pose[2]))
+            aligned = abs(error) <= self.YAW_TOLERANCE
+            self.phase = 'done' if near and aligned else 'drive'
+            return self.phase, 0. if aligned else max(-.1, min(.1, error)), near and aligned
         if self.phase == 'rotate_to_yaw' and not near:
-            self.phase = 'rotate_to_goal'
+            self.phase = 'rotate_to_goal' if self.face_goal else 'drive'
             return self.phase, 0., False
         if near:
             self.phase = 'rotate_to_yaw'
         if self.phase == 'drive':
             return 'drive', 0., False
-        desired = self.target_yaw if near else math.atan2(dy, dx)
+        desired = self.target_yaw if near or self.reverse else math.atan2(dy, dx)
         error = math.atan2(math.sin(desired - pose[2]), math.cos(desired - pose[2]))
         if abs(error) <= self.YAW_TOLERANCE:
             self.phase = 'done' if near else 'drive'

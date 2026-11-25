@@ -48,9 +48,9 @@ class AstribotCoordinator : public rclcpp::Node {
       :Node("astribot_local_planner",options),monotonic_(std::move(monotonic)) {
     dispatch_=declare_parameter<bool>("dispatch",false);
     backend_=declare_parameter<std::string>("planner_backend","mpc");
-    mode_=declare_parameter<std::string>("collision_lidar","rear");
+    mode_=declare_parameter<std::string>("collision_lidar","front");
     check(backend_=="mpc"||backend_=="library","planner_backend must be mpc or library");
-    check(mode_=="rear"||mode_=="auto","collision_lidar must be rear or auto");
+    check(mode_=="front"||mode_=="rear"||mode_=="auto","collision_lidar must be front, rear or auto");
     clouds_[0].reset(new astribot::CollisionCloud("front",astribot::load_mount(false),nav_));
     clouds_[1].reset(new astribot::CollisionCloud("rear",astribot::load_mount(true),nav_));
     output_=dispatch_?"/cmd_vel":PREFIX+"/cmd_vel_shadow";
@@ -67,7 +67,8 @@ class AstribotCoordinator : public rclcpp::Node {
       library_paths_=create_subscription<nav_msgs::msg::Path>(PREFIX+"/path",1,
         [this](nav_msgs::msg::Path::ConstSharedPtr m){library_path(*m);});
     }
-    for(int i=(mode_=="rear"?1:0);i<2;++i){
+    for(int i=0;i<2;++i){
+      if(mode_!="auto"&&mode_!=SIDE[i])continue;
       inputs_[i]=create_subscription<sensor_msgs::msg::PointCloud2>(CLOUD[i],rclcpp::SensorDataQoS(),
         [this,i](sensor_msgs::msg::PointCloud2::ConstSharedPtr m){cloud(*m,i);});
     }
@@ -141,7 +142,8 @@ class AstribotCoordinator : public rclcpp::Node {
         &&std::abs(q.x)<=.001&&std::abs(q.y)<=.001&&std::abs(std::hypot(q.z,q.w)-1.)<=.001
         &&age>=-.05&&age<=2.,"expected a fresh finite planar RViz goal in map");
       const double t=monotonic_();nav_.ready(t);std::string errors;
-      for(int i=(mode_=="rear"?1:0);i<2;++i){
+      for(int i=0;i<2;++i){
+        if(mode_!="auto"&&mode_!=SIDE[i])continue;
         auto problem=clouds_[i]->problem(t,nav_.stamp);
         if(!problem.empty()){errors+=(errors.empty()?"":"; ")+problem;continue;}
         for(const auto& topic:{CLOUD[i]})

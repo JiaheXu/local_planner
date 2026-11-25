@@ -2,6 +2,8 @@
   <arg name="dispatch" default="false" description="Publish cmd_vel only when explicitly requested"/>
   <arg name="planner_backend" default="$(command '$(find-pkg-prefix local_planner)/lib/local_planner/astribotCoordinator --default-backend')" description="Drive-stage controller: mpc or library"/>
   <arg name="python_debug" default="true" description="Use Python coordinator for debugging; false selects C++"/>
+  <arg name="ignore_lidar" default="false" description="Python MPC test without cloud input or obstacle avoidance; odometry still required"/>
+  <arg name="supervised_reverse_test" default="false" description="Supervised short reverse test without obstacle checks; Python MPC only"/>
   <node pkg="local_planner" exec="localPlanner" name="astribot_cpp_planner" output="screen" on_exit="shutdown">
     <param from="$(find-pkg-share local_planner)/config/astribot.yaml"/>
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths"/>
@@ -22,6 +24,8 @@
   <node if="$(var python_debug)" pkg="local_planner" exec="astribotCoordinatorPython" name="astribot_local_planner" output="screen" on_exit="shutdown">
     <param from="$(find-pkg-share local_planner)/config/astribot.yaml"/>
     <param name="dispatch" value="$(var dispatch)"/>
+    <param name="supervised_reverse_test" value="$(var supervised_reverse_test)"/>
+    <param name="ignore_lidar" value="$(var ignore_lidar)"/>
     <param name="planner_backend" value="$(var planner_backend)"/>
   </node>
 </launch>

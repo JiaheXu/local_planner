@@ -28,7 +28,7 @@ class Smoke : public rclcpp::Node {
  public:
   explicit Smoke(std::string backend,std::string scenario):Node("synthetic_local_planner_inputs"),backend_(backend),scenario_(scenario) {
     odom_=create_publisher<nav_msgs::msg::Odometry>("/fast_lio/chassis/odometry",rclcpp::SensorDataQoS());
-    cloud_=create_publisher<sensor_msgs::msg::PointCloud2>("/sdk/astribot_lidar/back_scan",rclcpp::SensorDataQoS());
+    cloud_=create_publisher<sensor_msgs::msg::PointCloud2>("/sdk/astribot_lidar/front_scan",rclcpp::SensorDataQoS());
     goal_=create_publisher<geometry_msgs::msg::PoseStamped>("/astribot_viz/goal_pose",1);
     cancel_=create_publisher<std_msgs::msg::Empty>("/astribot_viz/goal_cancel",1);
     commands_=create_subscription<geometry_msgs::msg::Twist>(prefix+"/cmd_vel_shadow",1,
@@ -40,13 +40,13 @@ class Smoke : public rclcpp::Node {
     drive(3.);
     require(count_publishers("/cmd_vel")==0,"test must never publish real cmd_vel");
     require(!history_.empty() && stopped(),"startup must be stopped");
-    require(count_publishers("/sdk/astribot_lidar/front_scan")==0,"rear test must not require front");
-    require(count_subscribers("/sdk/astribot_lidar/front_scan")==0,"rear-only must not subscribe to front clouds");
+    require(count_publishers("/sdk/astribot_lidar/back_scan")==0,"front test must not require rear");
+    require(count_subscribers("/sdk/astribot_lidar/back_scan")==0,"front-only must not subscribe to rear clouds");
     require(count_subscribers("/sdk/astribot_lidar/front_imu")==0 && count_subscribers("/sdk/astribot_lidar/back_imu")==0,
             "planner must not subscribe to LiDAR IMU");
     goal(); drive(2.,[this]{return forward();});
     require(forward(),"clear goal: "+reason());
-    require(state_.value("collision_lidar",std::string())=="rear","rear source not selected");
+    require(state_.value("collision_lidar",std::string())=="front","front source not selected");
     if(scenario_=="shutdown") {
       const char* process=std::getenv("LOCAL_PLANNER_TEST_COORDINATOR_PID");
       require(process!=nullptr,"missing synthetic coordinator PID");
@@ -56,7 +56,7 @@ class Smoke : public rclcpp::Node {
       pass("SIGTERM sends final zero while publisher context is valid");return;
     }
     cancel(); require(!active() && stopped(),"cancel must clear target and velocity");
-    pass("clear goal drives; cancel stops; rear only");
+    pass("clear goal drives; cancel stops; front only");
 
     obstacle_=true; drive(.4); goal(); drive(1.);
     require(!forward() && stopped(),"obstacle must prevent translation");
@@ -71,7 +71,8 @@ class Smoke : public rclcpp::Node {
     pass("cloud expiry cancels and never resumes");
 
     goal(); drive(2.,[this]{return forward();}); require(forward(),reason());
-    send_odom_=false; drive(.6);
+    // Python's receipt-only policy permits 2 s; C++ expires sooner.
+    send_odom_=false; drive(2.2);
     require(!active() && stopped(),"odometry loss must cancel");
     send_odom_=true; drive(.6);
     pass("odometry expiry cancels");

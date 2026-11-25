@@ -117,8 +117,11 @@ def test_dispatch_readiness_rejects_disabled_fault_changed_source_or_generation(
                   stop_pending=False, selected_source='auto', selected_topic='/cmd_vel',
                   feedback_age_ms=1., generation=3)
     state = SimpleNamespace(
+        backend='mpc',
         nav=SimpleNamespace(fields=lambda now: dict(position_navigation=[0., 0., 0.],
-                            navigation_age_ms=10.), reference_stamp=100, stamp=100),
+                            navigation_age_ms=10.), reference_stamp=100, stamp=100,
+                            pose=(0., 0., 0.), error=None, clock_fault=False,
+                            reference_error=None, received=10.),
         selected_lidar='front', collision_inputs={'front': SimpleNamespace(
             clock=SimpleNamespace(reference_stamp=100),problem=lambda now,stamp:None)},
         cloud_fault=False, cloud_error='', cloud_received=10., cloud_stamp=100,
@@ -128,6 +131,34 @@ def test_dispatch_readiness_rejects_disabled_fault_changed_source_or_generation(
     status.update(changes)
     with pytest.raises(ValueError):
         LocalPlanner.ready(state, 10.)
+
+
+@pytest.mark.parametrize('goal', [(-.2, 0.), (0., .2), (.2, 0.)])
+def test_direct_mpc_sequence_translates_without_initial_rotation(goal):
+    from local_planner_core import GoalSequence
+    sequence = GoalSequence()
+    sequence.begin(goal, .5, face_goal=False)
+    assert sequence.phase == 'drive'
+    assert sequence.update((0., 0., 0.)) == ('drive', 0., False)
+    assert sequence.update((*goal, 0.)) == ('rotate_to_yaw', .1, False)
+    assert sequence.update((*goal, .5)) == ('done', 0., True)
+
+
+def test_direct_mpc_backward_goal_same_yaw_never_turns():
+    from local_planner_core import GoalSequence
+    sequence = GoalSequence()
+    sequence.begin((-.2, 0.), 0., face_goal=False)
+    assert sequence.update((0., 0., 0.)) == ('drive', 0., False)
+    assert sequence.update((-.18, 0., 0.)) == ('done', 0., True)
+
+
+def test_direct_mpc_position_drift_returns_to_translation_without_turn():
+    from local_planner_core import GoalSequence
+    sequence = GoalSequence()
+    sequence.begin((0., 0.), .5, face_goal=False)
+    assert sequence.update((0., 0., 0.)) == ('rotate_to_yaw', .1, False)
+    assert sequence.update((.05, 0., 0.)) == ('drive', 0., False)
+    assert sequence.update((.05, 0., 0.)) == ('drive', 0., False)
 
 
 def test_goal_sequence_faces_goal_drives_then_aligns_final_yaw():

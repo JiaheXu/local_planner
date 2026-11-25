@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Planner package entry point. Never starts or enables robot hardware.
+# Planner entry point. Python dispatch can re-enable the existing base owner.
 set -euo pipefail
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH=false
 MODE=run
 BACKEND=
 PYTHON_DEBUG=true
+SUPERVISED_REVERSE_TEST=false
+IGNORE_LIDAR=false
 for arg in "$@"; do
   case "$arg" in
     --dispatch) DISPATCH=true ;;
@@ -15,11 +17,29 @@ for arg in "$@"; do
     --planner=library) BACKEND=library ;;
     --python-debug) PYTHON_DEBUG=true ;;
     --cpp) PYTHON_DEBUG=false ;;
-    *) echo "Usage: $0 [--dispatch] [--planner=mpc|library] [--python-debug|--cpp] [--check|--dry-run]" >&2; exit 2 ;;
+    --supervised-reverse-test) SUPERVISED_REVERSE_TEST=true ;;
+    --ignore-lidar) IGNORE_LIDAR=true ;;
+    *) echo "Usage: $0 [--dispatch] [--planner=mpc|library] [--python-debug|--cpp] [--ignore-lidar] [--supervised-reverse-test] [--check|--dry-run]" >&2; exit 2 ;;
   esac
 done
+if [[ "$IGNORE_LIDAR" == true ]]; then
+  if [[ "$PYTHON_DEBUG" != true || "$BACKEND" == library ]]; then
+    echo 'Ignoring LiDAR requires Python coordinator and MPC.' >&2
+    exit 2
+  fi
+  BACKEND=mpc
+fi
+if [[ "$SUPERVISED_REVERSE_TEST" == true ]]; then
+  if [[ "$PYTHON_DEBUG" != true || "$BACKEND" == library ]]; then
+    echo 'Supervised reverse test requires Python coordinator and MPC.' >&2
+    exit 2
+  fi
+  BACKEND=mpc
+fi
 COMMAND=(/opt/ros/humble/bin/ros2 launch local_planner astribot.launch.xml "dispatch:=${DISPATCH}")
 COMMAND+=("python_debug:=${PYTHON_DEBUG}")
+COMMAND+=("supervised_reverse_test:=${SUPERVISED_REVERSE_TEST}")
+COMMAND+=("ignore_lidar:=${IGNORE_LIDAR}")
 [[ -z "${BACKEND}" ]] || COMMAND+=("planner_backend:=${BACKEND}")
 if [[ "${MODE}" == preview ]]; then
   printf 'ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 '
@@ -63,5 +83,9 @@ PY
   echo 'Package dependencies and installed launch checked; no ROS nodes started.'
   exit 0
 fi
-echo "Astribot planner dispatch=${DISPATCH}. Select Auto Base Control before a new RViz goal."
+LOG_FILE="${LOCAL_PLANNER_LOG:-/tmp/astribot-local-planner.log}"
+touch "${LOG_FILE}"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "Local planner session $(date --iso-8601=seconds); log=${LOG_FILE}"
+echo "Astribot planner dispatch=${DISPATCH}. Python dispatch maintains auto base enable; wait for the owner before a new RViz goal."
 exec "${COMMAND[@]}"

@@ -91,7 +91,7 @@ install(TARGETS
 
 install(PROGRAMS scripts/run_astribot.sh DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS python/local_planner_node.py DESTINATION lib/${PROJECT_NAME} RENAME astribotCoordinatorPython)
-install(FILES python/local_planner_core.py python/navigation_feedback.py python/collision_feedback.py DESTINATION lib/${PROJECT_NAME})
+install(FILES python/local_planner_core.py python/navigation_feedback.py python/collision_feedback.py python/receipt_feedback.py python/planner_diagnostics.py python/auto_base_enable.py DESTINATION lib/${PROJECT_NAME})
 add_test(NAME planner_python COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/test)
 set_tests_properties(planner_python PROPERTIES ENVIRONMENT "PYTHONNOUSERSITE=1;PYTHONDONTWRITEBYTECODE=1;OPENBLAS_NUM_THREADS=1;ROS_LOG_DIR=/tmp/local-planner-ctest")
 install(PROGRAMS test/run_ros_smoke.sh DESTINATION share/${PROJECT_NAME}/test)

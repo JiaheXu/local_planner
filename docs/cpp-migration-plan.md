@@ -14,7 +14,7 @@ Python source for debugging (`--python-debug`) and removes LiDAR IMU subscriptio
 from both coordinators. FAST-LIO's IMU input remains unchanged.
 
 ## Constraints
-- Preserve rear-only default, optional auto selection, source pinning per goal,
+- Use front-only default, optional rear/auto selection, source pinning per goal,
   SDK-free coordinator, one output publisher, MODEL/armed/fresh owner gating.
 - Preserve source-time, monotonic receipt, schema, frame, epoch,
   publisher identity, command bound and collision gate. Scan age limits 500 ms;

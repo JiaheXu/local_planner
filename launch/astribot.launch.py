@@ -33,6 +33,7 @@ def components(context):
     follower = Node(package='local_planner', executable='astribotCoordinatorPython',
                     name='astribot_local_planner', output='screen', parameters=[str(ROOT / 'config/astribot.yaml'), {
                         'dispatch': ParameterValue(LaunchConfiguration('dispatch'), value_type=bool),
+                        'ignore_lidar': ParameterValue(LaunchConfiguration('ignore_lidar', default='false'), value_type=bool),
                         'planner_backend': backend}])
     nodes.append(follower)
     exits = [RegisterEventHandler(OnProcessExit(target_action=node, on_exit=[
@@ -45,6 +46,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('dispatch', default_value='false',
                               description='Explicitly publish /cmd_vel instead of private shadow output'),
+        DeclareLaunchArgument('ignore_lidar', default_value='false',
+                              description='MPC test without cloud input or obstacle avoidance'),
         DeclareLaunchArgument('planner_backend', default_value=config['planner_backend'],
                               choices=['mpc', 'library'], description='Drive-stage controller'),
         OpaqueFunction(function=components)])

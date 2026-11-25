@@ -31,8 +31,7 @@ backend_pid=$!
 COORDINATOR="$BIN/astribotCoordinator"
 [[ "$IMPLEMENTATION" != python ]] || COORDINATOR="$BIN/astribotCoordinatorPython"
 "$COORDINATOR" --ros-args --params-file "$SHARE/config/astribot.yaml" \
-  -p dispatch:=false -p "planner_backend:=$BACKEND" -p collision_lidar:=rear \
-  -p python_collision_checks_enabled:=true \
+  -p dispatch:=false -p "planner_backend:=$BACKEND" \
   > "$ROS_LOG_DIR/coordinator-$BACKEND.log" 2>&1 &
 coordinator_pid=$!
 export LOCAL_PLANNER_TEST_BACKEND_PID="$backend_pid"

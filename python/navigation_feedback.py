@@ -3,12 +3,15 @@ import math
 
 NAVIGATION_FRAME = "map"
 NAVIGATION_CHILD = "astribot_viz_chassis"
+ODOMETRY_MAX_AGE_S = 1.
+ODOMETRY_MAX_DELIVERY_DELAY_S = 1.
 
 
 def validate_navigation(status):
     p, age = status.get('position_navigation'), status.get('navigation_age_ms')
     if (p is None or len(p) != 3 or not all(math.isfinite(x) for x in p)
-            or type(age) not in (int, float) or not math.isfinite(age) or not 0 <= age <= 250.):
+            or type(age) not in (int, float) or not math.isfinite(age)
+            or not 0 <= age < ODOMETRY_MAX_AGE_S * 1000.):
         raise ValueError('Missing/invalid/stale FAST-LIO navigation pose: '
                          + str(status.get('navigation_error') or 'requires fresh chassis odometry'))
     return tuple(p)
@@ -50,7 +53,7 @@ class NavigationFeedback:
             return
         if self._anchor_stamp is None:
             self._anchor_stamp, self._anchor_received = stamp, now
-        if self.reference_received is not None and now-self.reference_received > .25:
+        if self.reference_received is not None and now-self.reference_received >= ODOMETRY_MAX_AGE_S:
             # A fresh returning sample cannot certify stable delivery on its own.
             # Keep the baseline so a delayed stream cannot rebase itself to ready.
             self.reference_ready, self._stable_since = False, None
@@ -69,7 +72,7 @@ class NavigationFeedback:
             # settling period. No goal can run before initial qualification.
             self._anchor_stamp, self._anchor_received = stamp, now
             self._stable_since = None
-        elif skew < -.25:
+        elif skew < -ODOMETRY_MAX_DELIVERY_DELAY_S:
             self.reference_ready, self._stable_since = False, None
             self.reference_error = f'odometry delivery delayed {(-skew):.6f} s relative to established reference'
             return
@@ -87,7 +90,7 @@ class NavigationFeedback:
             return self.reference_error
         if not self.reference_ready:
             return 'waiting for advancing odometry clock reference'
-        if not 0 <= now-self.reference_received <= .25:
+        if not 0 <= now-self.reference_received < ODOMETRY_MAX_AGE_S:
             return 'stale odometry clock reference'
         return None
 

@@ -7,27 +7,62 @@
 struct CoordinatorTestAccess {
   double time=10.,step=0.,signal_at=INFINITY;
   AstribotCoordinator node;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr rear;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr front,rear;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom;
   rclcpp::Publisher<Result>::SharedPtr result;
 
-  CoordinatorTestAccess():node(rclcpp::NodeOptions(),[this]{
+  static rclcpp::NodeOptions options(const std::string& mode) {
+    rclcpp::NodeOptions options;
+    if(!mode.empty())options.parameter_overrides({rclcpp::Parameter("collision_lidar",mode)});
+    return options;
+  }
+  explicit CoordinatorTestAccess(const std::string& mode=""):node(options(mode),[this]{
     const double t=time; time+=step;
     if(t>=signal_at) shutdown_requested=1;
     return t;
   }) {
     check(!node.dispatch_ && node.output_==PREFIX+"/cmd_vel_shadow","test requires shadow output");
+    front=node.create_publisher<sensor_msgs::msg::PointCloud2>(CLOUD[0],1);
     rear=node.create_publisher<sensor_msgs::msg::PointCloud2>(CLOUD[1],1);
     odom=node.create_publisher<nav_msgs::msg::Odometry>(ODOM,1);
     result=node.create_publisher<Result>(PREFIX+"/mpc_result",1);
     node.selected_=1;
     for(int i=0;;++i) {
-      try { node.sources(); break; }
+      try {
+        node.sources();
+        check(node.get_publishers_info_by_topic(CLOUD[0]).size()==1,"waiting for front fixture");
+        break;
+      }
       catch(const std::invalid_argument &) {
         if(i>=100) throw;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
     }
+  }
+  void mode_tests(const std::string& expected) {
+    check(node.mode_==expected,"wrong default or explicit collision mode");
+    check(bool(node.inputs_[0])==(expected!="rear"),"wrong front subscription");
+    check(bool(node.inputs_[1])==(expected!="front"),"wrong rear subscription");
+    prepare();
+    geometry_msgs::msg::PoseStamped goal;
+    goal.header.frame_id="map";goal.header.stamp=node.now();
+    goal.pose.position.x=1.;goal.pose.orientation.w=1.;
+    // Rear remains healthy throughout: front-only must reject missing front.
+    node.goal(goal);
+    if(expected=="front") {
+      check(!node.session_.active && node.selected_==-1 &&
+            node.session_.reason.find("front")!=std::string::npos,"front mode fell back to rear");
+    } else check(node.session_.active && node.selected_==1,"rear/auto did not select healthy rear");
+    auto& front_cloud=*node.clouds_[0];
+    front_cloud.stamp=node.nav_.stamp;front_cloud.received=10.;front_cloud.error.clear();
+    front_cloud.fault=false;front_cloud.points.clear();
+    node.goal(goal);
+    const int selected=expected=="rear"?1:0;
+    check(node.session_.active && node.selected_==selected,"wrong source with both feeds healthy");
+    // Selected-source loss must stop even while the other feed stays healthy.
+    node.clouds_[selected]->error="selected cloud lost";
+    node.tick();
+    check(!node.session_.active && node.last_translation_.isZero(),"selected-source loss failed to stop");
   }
   void owner_tests() {
     const Json good={{"armed",true},{"mode","MODEL"},{"hardware_writes",true},
@@ -157,7 +192,11 @@ int main(int argc,char **argv) {
   setenv("ROS_LOCALHOST_ONLY","1",1);
   try {
     rclcpp::init(argc,argv);
-    { CoordinatorTestAccess suite;suite.owner_tests();suite.reply_tests();suite.command_tests(); }
+    { CoordinatorTestAccess suite;suite.mode_tests("front"); }
+    { CoordinatorTestAccess suite("front");suite.mode_tests("front"); }
+    { CoordinatorTestAccess suite("auto");suite.mode_tests("auto"); }
+    { CoordinatorTestAccess suite("rear");suite.mode_tests("rear");
+      suite.owner_tests();suite.reply_tests();suite.command_tests(); }
     rclcpp::shutdown();
     std::cout<<"Coordinator owner, reply, command and expiry checks passed\n";
     return 0;

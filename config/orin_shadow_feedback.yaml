@@ -1,0 +1,17 @@
+# Onboard status/path/shadow velocity -> PC visualization. Never /cmd_vel.
+name: astribot_orin_shadow_feedback
+from_domain: 25
+to_domain: 0
+topics:
+  /cocomatrix/local_planner/status:
+    type: std_msgs/msg/String
+    remap: /astribot/local_planner/status
+    qos: &feedback {reliability: reliable, durability: volatile, history: keep_last, depth: 1}
+  /cocomatrix/local_planner/path_map:
+    type: nav_msgs/msg/Path
+    remap: /astribot/local_planner/path_map
+    qos: *feedback
+  /cocomatrix/local_planner/cmd_vel_shadow:
+    type: geometry_msgs/msg/Twist
+    remap: /astribot/local_planner/cmd_vel_shadow
+    qos: *feedback

@@ -32,6 +32,10 @@ def test_installed_launch_and_config_belong_to_package():
     assert (share / 'launch/astribot.launch.xml').is_file()
     assert (share / 'config/astribot.yaml').is_file()
     assert (share / 'config/astribot_geometry.yaml').is_file()
+    import yaml
+    parameters=yaml.safe_load((share / 'config/astribot.yaml').read_text())['/**']['ros__parameters']
+    assert parameters['collision_lidar']=='front'
+    assert parameters['python_collision_checks_enabled'] is True
 
 
 def test_default_coordinator_is_native_and_backend_default_reads_yaml(tmp_path):

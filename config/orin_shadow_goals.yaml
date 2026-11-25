@@ -1,0 +1,13 @@
+# PC RViz -> onboard planner. No velocity or owner-enable route.
+name: astribot_orin_shadow_goals
+from_domain: 0
+to_domain: 25
+topics:
+  /astribot_viz/goal_pose:
+    type: geometry_msgs/msg/PoseStamped
+    remap: /cocomatrix/local_planner/goal_pose
+    qos: &goal {reliability: reliable, durability: volatile, history: keep_last, depth: 1}
+  /astribot_viz/goal_cancel:
+    type: std_msgs/msg/Empty
+    remap: /cocomatrix/local_planner/goal_cancel
+    qos: *goal
