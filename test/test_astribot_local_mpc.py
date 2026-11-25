@@ -64,6 +64,61 @@ def test_cpp_result_passes_current_gates(boundary):
     assert state.mpc_drive((0.,0.,0.),10.05)==(.014,0.)
 
 
+def test_pose_mpc_result_drives_yaw_and_cancel_clears_it(boundary):
+    import math
+    import local_planner_node as module
+    state,result,commands=boundary
+    state.ignore_lidar=True
+    state.sequence.begin((1.,0.),1.,concurrent_yaw=True)
+    state.mpc_requests[1000000000]=((0.,0.,0.),10.,1,(0.,0.,0.))
+    state.last_yaw_rate=0.
+    state.mpc_yaw_rate=0.
+    state.mpc_pose_control=False
+    state.mpc_reference_yaw=None
+    result.command.linear.x=.01;result.command.angular.z=.02
+    x=y=yaw=0.
+    for item in result.path.poses:
+        item.pose.position.x=x;item.pose.position.y=y
+        item.pose.orientation.z=math.sin(yaw/2);item.pose.orientation.w=math.cos(yaw/2)
+        x+=.001*math.cos(yaw);y+=.001*math.sin(yaw);yaw+=.002
+    state.mpc_result(result)
+    assert state.session.goal is not None
+    assert state.mpc_yaw_rate==.02
+    module.LocalPlanner.tick(state)
+    assert commands[-1].linear.x>0. and commands[-1].angular.z==pytest.approx(.01)
+    state.cancel()
+    assert state.mpc_yaw_rate==0. and state.last_yaw_rate==0.
+    assert commands[-1].angular.z==0.
+
+
+def test_pose_mode_never_turns_without_fresh_solver_result(boundary):
+    import local_planner_node as module
+    state,result,commands=boundary
+    state.ignore_lidar=True
+    state.sequence.begin((1.,0.),1.,concurrent_yaw=True)
+    module.LocalPlanner.tick(state)
+    assert commands[-1].angular.z==0.
+
+
+def test_pose_request_carries_shortest_yaw_and_previous_angular_command(boundary):
+    import math
+    import local_planner_node as module
+    from local_planner.msg import MpcRequest
+    state,_,_=boundary
+    sent=[]
+    state.ignore_lidar=True
+    state.sequence.begin((1.,0.),-math.pi+.1,concurrent_yaw=True)
+    state.last_yaw_rate=.03
+    state.mpc_request_stamp=0;state.mpc_request_type=MpcRequest
+    state.get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(
+        nanoseconds=2_000_000_000,to_msg=lambda:__import__('builtin_interfaces.msg',fromlist=['Time']).Time(sec=2)))
+    state.mpc_requests_pub=SimpleNamespace(publish=sent.append)
+    module.LocalPlanner.send_mpc_request(state,(0.,0.,math.pi-.1),10.)
+    assert sent[0].plan_yaw and sent[0].goal_yaw==pytest.approx(.2)
+    assert sent[0].previous_yaw_rate==.03
+    assert state.mpc_requests[2_000_000_000][3]==(0.,0.,.03)
+
+
 @pytest.mark.parametrize('pose,deadline', [((0.,0.,0.),10.), ((-.121,0.,0.),25.),
     ((.011,0.,0.),25.), ((0.,.021,0.),25.), ((0.,0.,.101),25.)])
 def test_reverse_test_bounds_cancel_before_command(boundary, pose, deadline):

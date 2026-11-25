@@ -50,6 +50,9 @@ add_executable(planar_mpc_test test/planar_mpc_test.cpp)
 target_link_libraries(planar_mpc_test Eigen3::Eigen)
 enable_testing()
 add_test(NAME planar_mpc COMMAND planar_mpc_test)
+add_executable(pose_mpc_test test/pose_mpc_test.cpp)
+target_link_libraries(pose_mpc_test Eigen3::Eigen)
+add_test(NAME pose_mpc COMMAND pose_mpc_test)
 add_executable(pathFollower src/pathFollower.cpp)
 add_executable(astribotCoordinator src/astribotCoordinator.cpp)
 target_link_libraries(astribotCoordinator Eigen3::Eigen yaml-cpp "${cpp_typesupport_target}")
@@ -83,6 +86,7 @@ install(TARGETS
   localPlanner
   pathFollower
   planar_mpc_test
+  pose_mpc_test
   astribotCoordinator
   astribot_core_test
   astribot_coordinator_test
@@ -92,6 +96,7 @@ install(TARGETS
 install(PROGRAMS scripts/run_astribot.sh DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS python/local_planner_node.py DESTINATION lib/${PROJECT_NAME} RENAME astribotCoordinatorPython)
 install(FILES python/local_planner_core.py python/navigation_feedback.py python/collision_feedback.py python/receipt_feedback.py python/planner_diagnostics.py python/auto_base_enable.py DESTINATION lib/${PROJECT_NAME})
+install(FILES python/pose_mpc.py DESTINATION lib/${PROJECT_NAME})
 add_test(NAME planner_python COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider ${CMAKE_CURRENT_SOURCE_DIR}/test)
 set_tests_properties(planner_python PROPERTIES ENVIRONMENT "PYTHONNOUSERSITE=1;PYTHONDONTWRITEBYTECODE=1;OPENBLAS_NUM_THREADS=1;ROS_LOG_DIR=/tmp/local-planner-ctest")
 install(PROGRAMS test/run_ros_smoke.sh DESTINATION share/${PROJECT_NAME}/test)

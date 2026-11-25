@@ -3,7 +3,8 @@
 set -euo pipefail
 BRIDGE=orin_dispatch_bridge.py
 if [[ $# == 1 && "$1" == --basic-control ]]; then
-  BRIDGE=orin_basic_bridge.py
+  echo 'Basic goal delivery now uses actions in Start Astribot. Start the desktop base session; do not run this obsolete topic relay.' >&2
+  exit 2
 elif [[ $# != 0 ]]; then
   echo "Usage: $0 [--basic-control]" >&2
   exit 2

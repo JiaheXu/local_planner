@@ -3,12 +3,27 @@
 This ROS 2 package owns the complete Astribot local-planning pipeline: the C++
 MPC/library backends, goal stages, path following, collision checks, sensor/pose
 validation, launch/configuration, build scripts and tests. It communicates with
-XPolicy through ROS topics only; it imports no XPolicy modules or robot SDK.
+XPolicy through ROS topics and actions; it imports no XPolicy modules or robot SDK.
+
+Orin `--basic-control` receives acknowledged `NavigateLocalGoal` actions at
+`/cocomatrix/local_planner/navigate`, with feedback, result, and cancellation.
+Build the interface only with `bash scripts/build_navigation_interfaces.sh` on
+both PC and Orin before restarting their sessions. This does not rebuild MPC or
+start ROS nodes. The PC desktop converts RViz goal/cancel topics into actions;
+the basic coordinator no longer accepts legacy goal/cancel topics. Commands stay
+plain Twist and the PC remains the sole SDK writer. See `docs/astribot.md`.
 
 The Python MPC default is **simultaneous translation and target-yaw tracking**,
 with a 0.1 m/s MPC translation limit and 0.03 m / 0.05 rad goal tolerances.
 Translation slows to at most `0.6 * distance_m` m/s near the goal, then zero
 inside 3 cm; yaw correction continues until the heading tolerance is met.
+In `--ignore-lidar` mode, the C++ pose MPC now jointly optimizes body `vx`, `vy`
+and yaw rate and publishes predicted orientations. Angular speed tapers with
+position and heading error, with a 0.03 rad/s cap at the position target before
+further heading-based reduction. The full planner must be rebuilt on both hosts
+with `bash scripts/build.sh` because `MpcRequest` has new explicit yaw fields.
+This does not require rebuilding the separate goal action interface. Restart the
+manual planner after building; no build step starts a hardware writer.
 Cached XY commands are re-expressed in the current chassis frame while turning.
 The library backend and bounded reverse-test mode retain their staged behavior.
 Forward, backward and sideways goals start without turning toward the position.

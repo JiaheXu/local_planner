@@ -1,5 +1,33 @@
 # Astribot planner operation
 
+## Orin basic mode: acknowledged navigation action
+
+Build `bash scripts/build_navigation_interfaces.sh` on PC and Orin once, then use
+the usual desktop Start Astribot and manual Orin command:
+`bash ~/ros2_ws/src/local_planner/scripts/run_orin_dispatch.sh --ignore-lidar --basic-control`.
+The launcher sources `local_planner_interfaces` automatically. The tiny interface
+build starts no nodes and does not rebuild the MPC backend.
+
+RViz still publishes `/astribot_viz/goal_pose` locally. The PC relay sends
+`local_planner_interfaces/action/NavigateLocalGoal` to
+`/cocomatrix/local_planner/navigate` in Orin domain 25. Action acceptance, feedback,
+completion/abort and cancellation are correlated by UUID. The basic coordinator
+no longer subscribes to remote goal/cancel topics. Its existing MPC, navigation
+checks, tolerances, velocity limits and owner-independent planning are unchanged.
+It waits up to 5 s for navigation, then aborts visibly. Completion requires both
+position and yaw tolerances; other cleared goals return abort reasons.
+
+The desktop queues the latest click up to 10 s for discovery/cancellation and
+waits 5 s for acceptance. Expired clicks are not replayed after reconnection.
+Canceled or timed-out requests never open the PC command gate on late acceptance.
+Replacement waits for the prior terminal result. An uncertain send is retained
+until its outcome is known, rather than risking duplicate execution. The desktop
+log and `/astribot/local_planner/goal_delivery` JSON topic show delivery state and
+goal UUID. Network loss cannot guarantee delivery. Twist remains the command
+transport; no additional SDK writer, ownership gate or velocity watchdog is added.
+The obsolete standalone `run_orin_dispatch_bridge.sh --basic-control` refuses
+startup; use the desktop relay instead.
+
 ## Manual terminal debugging on the PC
 
 Start Astribot starts the owner/sensors/FAST-LIO bridge/RViz and requests automatic
@@ -178,15 +206,48 @@ The compiled `src/astribotCoordinator.cpp` owns goal stages and command checks;
 path following. Python source and tests remain available for debugging; both
 implementations use the same contracts and have no planner IMU subscriptions.
 
-The C++ XY MPC uses a 2 s horizon (20 × 0.1 s) and planar vx/vy. The Python
-coordinator adds concurrent yaw tracking and near-goal slowing; the independent
-native coordinator retains its existing staged yaw behavior. Eigen
+Both MPC variants use a 2 s horizon (20 × 0.1 s). In Python `--ignore-lidar`
+mode, `pose_mpc.hpp` jointly optimizes body vx/vy/yaw-rate in a 60-variable QP.
+Each solve linearizes holonomic SE(2) dynamics about the previous published body
+velocity rollout. The returned path is the nonlinear rollout of optimized
+controls, with an orientation at every pose. This is one sequential-QP step per
+request, not an exact nonlinear optimizer. Other Python modes retain the XY
+solver plus proportional yaw; native C++ retains staged yaw. Eigen
 ADMM solves a convex quadratic objective with linear constraints; this is an
 independent implementation, not the OSQP library. Mathematical reference:
 [ADMM QP formulation](https://osqp.org/docs/solver/index.html).
 Its speed bound is `|vx| + |vy| <= 0.1 m/s`; diagonal speed is therefore lower.
 Component acceleration is at most 0.14 m/s². The library follower remains at
 0.05 m/s. The owner independently applies its final velocity/acceleration limits.
+
+No-obstacle pose mode retains the 0.1 rad/s angular ceiling and adds a 0.2 rad/s²
+optimizer angular acceleration bound. Both optimizer and dispatch reduce XY speed
+to `min(0.1, 0.6*distance_m)`. Angular speed is capped at
+`min(0.1, 0.03+0.07*min(distance_m/0.3,1), 0.8*abs(wrapped_yaw_error))` rad/s.
+Inside 3 cm, translation stops but orientation correction remains possible;
+inside 0.05 rad, rotation stops. Optimizer caps allow bounded braking from the
+previous command. Dispatch enforces terminal caps immediately, and cancellation
+also bypasses the ramps. These final stops are intentionally not acceleration
+limited. The initial tuning is software-tested, not hardware-qualified.
+
+`MpcRequest.plan_yaw`, `goal_yaw` (radians relative to the request chassis), and
+`previous_yaw_rate` (rad/s) explicitly select pose planning. Pose mode rejects
+obstacle-bearing requests. Both hosts need a full `scripts/build.sh` build for
+the new request layout; the action interface is unchanged. The coordinator
+validates unit planar quaternions and reconstructs body-frame velocities from
+the path to check angular/translation speed and acceleration and the first
+command. RViz path orientations are transformed back into map coordinates.
+
+On Orin, build with the same vendor ROS environment as the manual runtime and a
+separate CMake directory; the system ROS installation lacks the required PCL
+packages. Do not combine vendor CMake generators with system ROS Python modules:
+```bash
+LOCAL_PLANNER_ROS_SETUP="$HOME/ros2_ws/src/astribot_planner_bringup/environment.sh" \
+LOCAL_PLANNER_BUILD_DIR="$HOME/ros2_ws/build/local_planner_vendor_yaw" \
+bash "$HOME/ros2_ws/src/local_planner/scripts/build.sh"
+```
+The PC uses the normal `bash scripts/build.sh` command. These commands build and
+run offline/isolated-domain tests; neither starts the real planner or SDK writer.
 
 `MpcRequest` and `MpcResult` carry request identities and goal epochs. Python uses
 strictly increasing local ROS timestamps so repeated solves of the latest valid
@@ -210,7 +271,8 @@ goal for retry. Late replies are discarded; they cannot extend command lifetime.
 After a stop, old in-flight predictions are invalidated and motion requires a new
 solution. Invalid results, owner faults, publisher changes and explicit cancel
 still clear the goal (basic mode does not gate planning on owner status).
-Yaw correction runs concurrently through the existing proportional controller.
+In no-obstacle pose mode, yaw comes from the same accepted MPC result as XY;
+there is no proportional-yaw fallback while waiting for a result.
 Dispatch acceleration
 uses elapsed time, so faster replies cannot increase the ramp. Stops are immediate.
 

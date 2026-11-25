@@ -1,5 +1,6 @@
 #pragma once
 #include "local_planner/planar_mpc.hpp"
+#include "local_planner/pose_mpc.hpp"
 #include "local_planner/msg/mpc_request.hpp"
 #include "local_planner/msg/mpc_result.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -31,6 +32,23 @@ class MpcRos {
     }
     last_stamp_=stamp;
     if (epoch_!=request.epoch) { solver_.reset(); epoch_=request.epoch; }
+    if(request.plan_yaw) {
+      if(!request.obstacles.empty()) {
+        response.error="pose MPC currently requires no obstacles";result_->publish(response);return;
+      }
+      auto solved=pose_solver_.solve({request.goal.x,request.goal.y},request.goal_yaw,
+                                    {request.previous_velocity.x,request.previous_velocity.y},request.previous_yaw_rate);
+      response.success=solved.success;response.error=solved.error;response.solve_ms=solved.solve_ms;
+      response.command.linear.x=solved.velocity.x();response.command.linear.y=solved.velocity.y();
+      response.command.angular.z=solved.yaw_rate;response.path.header=request.header;
+      for(const auto& p:solved.poses) {
+        geometry_msgs::msg::PoseStamped pose;pose.header=request.header;
+        pose.pose.position.x=p.x();pose.pose.position.y=p.y();
+        pose.pose.orientation.z=std::sin(p.z()/2.);pose.pose.orientation.w=std::cos(p.z()/2.);
+        response.path.poses.push_back(pose);
+      }
+      result_->publish(response);return;
+    }
     Points points;
     points.reserve(request.obstacles.size());
     for (const auto& p : request.obstacles) {
@@ -55,6 +73,7 @@ class MpcRos {
   rclcpp::Subscription<msg::MpcRequest>::SharedPtr request_;
   rclcpp::Publisher<msg::MpcResult>::SharedPtr result_;
   PlanarMpc solver_;
+  PoseMpc pose_solver_;
   std::string frame_;
   uint64_t epoch_=0;
   int64_t last_stamp_=0;

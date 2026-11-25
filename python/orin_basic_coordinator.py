@@ -1,9 +1,10 @@
-"""Standard PoseStamped goals and Twist output; PC handles SDK enable."""
+"""Action goals and Twist output; PC handles SDK enable."""
 import rclpy
 from rclpy.duration import Duration
 from rclpy.qos import QoSProfile
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import Twist
 from local_planner_node import LocalPlanner
+from goal_action_server import GoalActionServer
 
 
 class BasicPlanner(LocalPlanner):
@@ -13,6 +14,7 @@ class BasicPlanner(LocalPlanner):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.auto_base_enable = None  # The enable service lives on PC domain 0.
+        self.goal_actions = GoalActionServer(self)
 
     def create_publisher(self, cls, topic, qos_profile, **kwargs):
         if cls is Twist and topic == '/cmd_vel':
@@ -20,13 +22,9 @@ class BasicPlanner(LocalPlanner):
         return super().create_publisher(cls, topic, qos_profile, **kwargs)
 
     def create_subscription(self, cls, topic, callback, *args, **kwargs):
-        if cls is PoseStamped and topic == '/astribot_viz/goal_pose':
-            def local_goal(message):
-                # PC validates the RViz stamp; DDS goal lifespan bounds transport.
-                # Do not compare the independent PC and Orin wall clocks.
-                message.header.stamp = self.get_clock().now().to_msg()
-                callback(message)
-            return super().create_subscription(cls, topic, local_goal, *args, **kwargs)
+        if topic in ('/astribot_viz/goal_pose', '/astribot_viz/goal_cancel'):
+            # Action admission is the sole goal/cancel path for this subclass.
+            return None
         return super().create_subscription(cls, topic, callback, *args, **kwargs)
 
 
@@ -38,8 +36,7 @@ def main():
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
-        if node.context.ok():
-            node.cancel(reason='Orin basic planner shutting down')
+        node.goal_actions.close()
         node.destroy_node()
         rclpy.try_shutdown()
 

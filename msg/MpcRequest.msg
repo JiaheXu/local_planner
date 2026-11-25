@@ -8,3 +8,7 @@ uint64 epoch
 geometry_msgs/Point goal
 geometry_msgs/Vector3 previous_velocity
 geometry_msgs/Point[] obstacles
+# Explicit no-obstacle pose mode; legacy requests default to XY-only.
+bool plan_yaw
+float64 goal_yaw
+float64 previous_yaw_rate

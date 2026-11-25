@@ -22,6 +22,16 @@ set +u
 export AMENT_CURRENT_PREFIX="${WORKSPACE}/install/local_planner"
 source "${AMENT_CURRENT_PREFIX}/share/local_planner/local_setup.bash"
 unset AMENT_CURRENT_PREFIX
+if [[ ${BASIC_CONTROL} == true ]]; then
+  export AMENT_CURRENT_PREFIX="${WORKSPACE}/install/local_planner_interfaces"
+  if [[ ! -f "${AMENT_CURRENT_PREFIX}/share/local_planner_interfaces/local_setup.bash" ]]; then
+    echo "Build navigation actions: bash ${PACKAGE_ROOT}/scripts/build_navigation_interfaces.sh" >&2
+    exit 1
+  fi
+  source "${AMENT_CURRENT_PREFIX}/share/local_planner_interfaces/local_setup.bash"
+  unset AMENT_CURRENT_PREFIX
+  /usr/bin/python3 -c 'from local_planner_interfaces.action import NavigateLocalGoal'
+fi
 set -u
 export ROS_DOMAIN_ID=25 ROS_LOCALHOST_ONLY=0 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/astribot_ros/robot_system_ctrl/fastdds_udp.xml

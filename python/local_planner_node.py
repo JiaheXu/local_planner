@@ -21,6 +21,7 @@ from collision_feedback import choose_collision_source
 from receipt_feedback import CollisionCloud, NavigationFeedback, validate_navigation, MAX_AGE_S
 from planner_diagnostics import PlannerDiagnostics
 from auto_base_enable import AutoBaseEnable
+from pose_mpc import validate_pose_prediction, limit_goal_yaw_rate
 
 PREFIX = '/astribot/local_planner'
 FRONT = '/sdk/astribot_lidar/front_scan'
@@ -69,6 +70,7 @@ class LocalPlanner(Node):
         self.mpc_epoch = 0
         self.mpc_request_stamp = 0
         self.last_translation = (0., 0.)
+        self.last_yaw_rate = 0.
         self.last_command_time = time.monotonic()
         self.reset_mpc()
         self.mount = front_mount()
@@ -138,6 +140,8 @@ class LocalPlanner(Node):
         self.mpc_requests = OrderedDict()
         self.mpc_last_stamp = 0
         self.mpc_velocity = (0., 0.)
+        self.mpc_yaw_rate = 0.
+        self.mpc_pose_control = False
         self.mpc_reference_yaw = None
         self.mpc_received = -math.inf
         self.mpc_solve_ms = None
@@ -172,6 +176,7 @@ class LocalPlanner(Node):
         self.session.reason = 'waiting: ' + reason
         self.commands.publish(Twist())
         self.last_translation = (0., 0.)
+        self.last_yaw_rate = 0.
         self.last_command_time = time.monotonic()
 
     def send_mpc_request(self, pose, now):
@@ -185,8 +190,16 @@ class LocalPlanner(Node):
         request.epoch = self.mpc_epoch
         request.goal.x, request.goal.y = map(float, relative_goal(self.session.goal, pose))
         request.previous_velocity.x, request.previous_velocity.y = self.last_translation
+        request.plan_yaw = (getattr(self, 'ignore_lidar', False)
+                            and getattr(self.sequence, 'concurrent_yaw', False))
+        previous = self.last_translation
+        if request.plan_yaw:
+            error = self.sequence.target_yaw-pose[2]
+            request.goal_yaw = math.atan2(math.sin(error), math.cos(error))
+            request.previous_yaw_rate = self.last_yaw_rate
+            previous = (*self.last_translation, self.last_yaw_rate)
         request.obstacles = [Point(x=float(x), y=float(y)) for x, y in self.points]
-        self.mpc_requests[stamp] = (pose, now, self.mpc_epoch, self.last_translation)
+        self.mpc_requests[stamp] = (pose, now, self.mpc_epoch, previous)
         while len(self.mpc_requests) > 5:
             self.mpc_requests.popitem(last=False)
         self.mpc_requests_pub.publish(request)
@@ -336,6 +349,7 @@ class LocalPlanner(Node):
         self.selected_lidar = None
         self.commands.publish(Twist())
         self.last_translation = (0., 0.)
+        self.last_yaw_rate = 0.
         self.last_command_time = time.monotonic()
         self.cancels.publish(Empty())
         empty = Path()
@@ -434,6 +448,7 @@ class LocalPlanner(Node):
                 or result.epoch != self.mpc_epoch or stamp <= self.mpc_last_stamp):
             return
         pose, received, epoch, previous_velocity = snapshot
+        pose_control = len(previous_velocity) == 3
         try:
             now = time.monotonic()
             self.ready(now)
@@ -449,7 +464,8 @@ class LocalPlanner(Node):
             local = np.array([[p.pose.position.x, p.pose.position.y] for p in result.path.poses]).reshape(-1, 2)
             if (result.header.frame_id != FRAME or result.path.header != result.header
                     or not all(math.isfinite(x) for x in values)
-                    or any(x != 0. for x in (v.z, w.x, w.y, w.z))
+                    or any(x != 0. for x in (v.z, w.x, w.y))
+                    or (not pose_control and w.z != 0.) or abs(w.z) > .100001
                     or abs(v.x) + abs(v.y) > .100001 or not 0 <= result.solve_ms <= 40.
                     or len(local) != (1 if result.blocked else 21) or not np.isfinite(local).all()
                     or np.any(np.linalg.norm(local, axis=1) > .201)
@@ -459,15 +475,19 @@ class LocalPlanner(Node):
             for item in result.path.poses:
                 p, q = item.pose.position, item.pose.orientation
                 if (item.header != result.header or p.z != 0.
-                        or (q.x, q.y, q.z, q.w) != (0., 0., 0., 1.)):
+                        or (not pose_control and (q.x, q.y, q.z, q.w) != (0., 0., 0., 1.))):
                     raise ValueError('invalid C++ MPC prediction pose')
-            if not result.blocked:
+            if pose_control:
+                path_yaw = validate_pose_prediction(result.path, result.command, previous_velocity)
+            elif not result.blocked:
                 controls = np.diff(local, axis=0) / .1
                 if (np.max(np.abs(controls[0] - velocity)) > 1e-6
                         or np.any(np.sum(np.abs(controls), axis=1) > .100001)
                         or np.max(np.abs(np.diff(np.vstack([previous_velocity, controls]), axis=0))) > .014001):
                     raise ValueError('C++ MPC command and prediction disagree')
             self.mpc_velocity = velocity
+            self.mpc_yaw_rate = w.z
+            self.mpc_pose_control = pose_control
             self.mpc_reference_yaw = pose[2]
             self.mpc_received = received  # Age starts at request, never refreshed by late replies.
             self.mpc_solve_ms = result.solve_ms
@@ -477,9 +497,12 @@ class LocalPlanner(Node):
             self.session.reason = 'blocked: MPC clearance' if result.blocked else 'C++ MPC tracking'
             display = deepcopy(result.path)
             display.header.frame_id = 'map'
-            for item, xy in zip(display.poses, self.mpc_path):
+            for index, (item, xy) in enumerate(zip(display.poses, self.mpc_path)):
                 item.header = deepcopy(display.header)
                 item.pose.position.x, item.pose.position.y = map(float, xy)
+                if pose_control:
+                    yaw = pose[2] + path_yaw[index]
+                    item.pose.orientation.z, item.pose.orientation.w = math.sin(yaw/2), math.cos(yaw/2)
             self.paths.publish(display)
         except MpcWaiting as exc:
             self.wait_mpc(str(exc))
@@ -559,6 +582,15 @@ class LocalPlanner(Node):
                     if self.backend == 'mpc':
                         vx, vy = self.mpc_drive(pose, now)
                         vx, vy = self.bounded_mpc_command(vx, vy, now)
+                        if (getattr(self, 'ignore_lidar', False)
+                                and getattr(self.sequence, 'concurrent_yaw', False)):
+                            # No proportional-yaw fallback: all three commands
+                            # must originate from the same accepted MPC result.
+                            wz = self.mpc_yaw_rate if getattr(self, 'mpc_pose_control', False) else 0.
+                            step = .2 * max(0., min(.1, now-self.last_command_time))
+                            previous = getattr(self, 'last_yaw_rate', 0.)
+                            wz = max(previous-step, min(previous+step, wz))
+                            wz = limit_goal_yaw_rate(wz, pose, self.session.goal, self.sequence.target_yaw)
                         if getattr(self.sequence, 'concurrent_yaw', False):
                             # Apply after acceleration limiting so a cached fast
                             # command cannot defeat the distance-dependent cap.
@@ -611,6 +643,7 @@ class LocalPlanner(Node):
         msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
         self.commands.publish(msg)
         self.last_translation = (vx, vy)
+        self.last_yaw_rate = wz
         self.last_command_time = time.monotonic()
         auto_enable = getattr(self, 'auto_base_enable', None)
         if auto_enable is not None and not auto_enable.done:
