@@ -143,7 +143,7 @@ def test_timing_recovery_does_not_resume_cancelled_goal(monkeypatch):
         session=PathSession(),sequence=GoalSequence(),snapshots={},source_ids=None,
         owner_generation=None,owner_status={},dispatch=False,backend='mpc',mpc_epoch=1,
         mpc_solve_ms=None,commands=NS(publish=commands.append),cancels=transport,paths=transport,
-        status=transport,output_topic='shadow')
+        status=transport,output_topic='shadow',points=[])
     state.session.begin((2.,2.),100_000_000_000);state.sequence.begin((2.,2.),0.)
     for method in ('ready','cancel','reset_mpc'):
         setattr(state,method,MethodType(getattr(module.LocalPlanner,method),state))

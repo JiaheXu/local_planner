@@ -5,6 +5,15 @@ using namespace local_planner;
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 int main() {
   PoseMpc solver;
+  Points reference(20,Point(0.,.2));
+  auto guided=solver.solve({1.,0.},.4,{0.,0.},0.,reference);
+  check(guided.success && guided.velocity.y()>.001 && std::abs(guided.velocity.x())<.001,
+        "XY reference must guide translation while retaining final yaw");
+  check(guided.yaw_rate>0.,"reference tracking keeps joint yaw");
+  check(!solver.solve({1.,0.},0.,{0.,0.},0.,Points(19,Point::Zero())).success,
+        "reject incomplete reference horizon");
+  reference[4].x()=NAN;
+  check(!solver.solve({1.,0.},0.,{0.,0.},0.,reference).success,"reject invalid reference sample");
   auto far=solver.solve({.5,.2},1.,{0.,0.},0.);
   check(far.success,far.error.c_str());
   check(far.velocity.norm()>0. && far.yaw_rate>0.,"translate and turn together");

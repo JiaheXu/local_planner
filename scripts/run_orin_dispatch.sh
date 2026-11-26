@@ -3,20 +3,30 @@
 set -euo pipefail
 BASIC_CONTROL=false
 IGNORE_LIDAR=false
+OBSTACLE_MODE=''
+DRY_RUN=false
 for option in "$@"; do
   case "${option}" in
     --basic-control) BASIC_CONTROL=true ;;
-    --ignore-lidar) IGNORE_LIDAR=true ;;
+    --ignore-lidar|--avoid-obstacles)
+      if [[ -n ${OBSTACLE_MODE} ]]; then echo 'Choose exactly one obstacle mode.' >&2; exit 2; fi
+      OBSTACLE_MODE="${option}"
+      if [[ ${option} == --ignore-lidar ]]; then IGNORE_LIDAR=true; fi ;;
+    --dry-run) DRY_RUN=true ;;
     *) echo "Unknown option: ${option}" >&2; exit 2 ;;
   esac
 done
-if [[ ${IGNORE_LIDAR} != true ]]; then
-  echo "Usage: $0 --ignore-lidar [--basic-control]" >&2
+if [[ -z ${OBSTACLE_MODE} ]]; then
+  echo "Usage: $0 (--avoid-obstacles|--ignore-lidar) [--basic-control] [--dry-run]" >&2
   exit 2
 fi
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="$(cd "${PACKAGE_ROOT}/../.." && pwd)"
 BRINGUP="${WORKSPACE}/src/astribot_planner_bringup"
+if [[ ${DRY_RUN} == true ]]; then
+  printf 'ROS_DOMAIN_ID=25 ros2 launch local_planner astribot_orin_dispatch.launch.py basic_control:=%s ignore_lidar:=%s\n' "${BASIC_CONTROL}" "${IGNORE_LIDAR}"
+  exit 0
+fi
 source "${BRINGUP}/environment.sh"
 set +u
 export AMENT_CURRENT_PREFIX="${WORKSPACE}/install/local_planner"
@@ -42,7 +52,8 @@ exec 9>"${WORKSPACE}/planner.lock"
 flock -n 9 || { echo 'An Orin planner is running; press Ctrl+C in its terminal first.' >&2; exit 1; }
 LOG_FILE="${WORKSPACE}/log/orin-dispatch-planner.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
-echo 'MPC dispatch via the PC base owner; collision checking OFF. Send a new RViz goal after owner is armed.'
+echo "Direct-goal XY+yaw MPC via the PC base owner; no path selector. Cloud-check mode: ${OBSTACLE_MODE}. Waiting for a new goal."
 echo "Basic Twist control: ${BASIC_CONTROL}"
 exec ros2 launch local_planner astribot_orin_dispatch.launch.py \
-  "bringup_dir:=${BRINGUP}" "planner_source:=${PACKAGE_ROOT}" "basic_control:=${BASIC_CONTROL}"
+  "bringup_dir:=${BRINGUP}" "planner_source:=${PACKAGE_ROOT}" "basic_control:=${BASIC_CONTROL}" \
+  "ignore_lidar:=${IGNORE_LIDAR}"

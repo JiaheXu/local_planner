@@ -16,7 +16,8 @@ from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import Empty, String
 
 from local_planner_core import (FRAME, GoalSequence, PathSession, collision_free, follow,
-                                front_mount, rear_cloud_mount, relative_goal, world_path, limit_goal_velocity)
+                                front_mount, rear_cloud_mount, relative_goal, world_path, limit_goal_velocity,
+                                path_collision_free, projected_obstacle_cloud)
 from collision_feedback import choose_collision_source
 from receipt_feedback import CollisionCloud, NavigationFeedback, validate_navigation, MAX_AGE_S
 from planner_diagnostics import PlannerDiagnostics
@@ -86,6 +87,7 @@ class LocalPlanner(Node):
         self.snapshots = OrderedDict()
         self.cloud_stamp, self.cloud_received = 0, -math.inf
         self.points = np.empty((0, 2))
+        self.obstacles_display_at = -math.inf
         self.owner_status, self.owner_received = {}, -math.inf
         self.owner_generation = None
         self.source_ids = None
@@ -100,6 +102,7 @@ class LocalPlanner(Node):
                 lambda: self.enable_client.call_async(SetBool.Request(data=True)),
                 self.get_logger().info, started=time.monotonic())
         self.scans = self.create_publisher(LaserScan, PREFIX + '/scan', 1)
+        self.obstacles = self.create_publisher(PointCloud2, PREFIX + '/obstacles', 1)
         self.goals = self.create_publisher(PointStamped, PREFIX + '/way_point', 1)
         self.cancels = self.create_publisher(Empty, PREFIX + '/cancel', 1)
         self.paths = self.create_publisher(Path, PREFIX + '/path_map', 1)
@@ -190,8 +193,7 @@ class LocalPlanner(Node):
         request.epoch = self.mpc_epoch
         request.goal.x, request.goal.y = map(float, relative_goal(self.session.goal, pose))
         request.previous_velocity.x, request.previous_velocity.y = self.last_translation
-        request.plan_yaw = (getattr(self, 'ignore_lidar', False)
-                            and getattr(self.sequence, 'concurrent_yaw', False))
+        request.plan_yaw = getattr(self.sequence, 'concurrent_yaw', False)
         previous = self.last_translation
         if request.plan_yaw:
             error = self.sequence.target_yaw-pose[2]
@@ -371,6 +373,21 @@ class LocalPlanner(Node):
         now = time.monotonic()
         sample = self.collision_inputs[side]
         sample.receive(msg, now=now)
+        # Display every retained XY return, including before the first goal.
+        # A debug cloud never changes goal admission or obstacle freshness.
+        if (hasattr(self, 'obstacles') and not sample.problem(now, self.nav.stamp)
+                and self.nav.pose is not None and now-self.obstacles_display_at >= .5):
+            if self.selected_lidar == side or (self.selected_lidar is None and
+                    side == ('rear' if self.collision_lidar == 'rear' else 'front')):
+                # Visualization only: cap to 5k points at 2 Hz. Control and path
+                # checks retain the entire cloud. Map coordinates avoid retiming
+                # the source stamp to satisfy desktop display TF clocks.
+                stride = max(1, math.ceil(len(sample.points)/5000))
+                points = world_path(sample.points[::stride], self.nav.pose)
+                display = projected_obstacle_cloud(points, msg.header)
+                display.header.frame_id = 'map'
+                self.obstacles.publish(display)
+                self.obstacles_display_at = now
         # Other sensors cannot overwrite collision data, invalidate predictions,
         # or resurrect a cancelled goal. Source selection is pinned per goal.
         if self.selected_lidar != side:
@@ -470,14 +487,19 @@ class LocalPlanner(Node):
                     or len(local) != (1 if result.blocked else 21) or not np.isfinite(local).all()
                     or np.any(np.linalg.norm(local, axis=1) > .201)
                     or np.linalg.norm(local[0]) > 1e-6
-                    or (result.blocked and velocity != (0., 0.))):
+                    or (result.blocked and (velocity != (0., 0.) or w.z != 0.))):
                 raise ValueError('invalid C++ MPC result')
             for item in result.path.poses:
                 p, q = item.pose.position, item.pose.orientation
                 if (item.header != result.header or p.z != 0.
                         or (not pose_control and (q.x, q.y, q.z, q.w) != (0., 0., 0., 1.))):
                     raise ValueError('invalid C++ MPC prediction pose')
-            if pose_control:
+            if result.blocked:
+                q = result.path.poses[0].pose.orientation
+                if (q.x, q.y, q.z, q.w) != (0., 0., 0., 1.):
+                    raise ValueError('invalid blocked pose MPC orientation')
+                path_yaw = [0.]
+            elif pose_control:
                 path_yaw = validate_pose_prediction(result.path, result.command, previous_velocity)
             elif not result.blocked:
                 controls = np.diff(local, axis=0) / .1
@@ -520,8 +542,7 @@ class LocalPlanner(Node):
             # an unsafe cached prediction immediately, including the current footprint.
             local = np.vstack([np.zeros((1, 2)),
                                [relative_goal(xy, pose) for xy in self.mpc_path]])
-            if any(np.any(np.linalg.norm(self.points - center, axis=1) < .55 - 1e-5)
-                   for center in local):
+            if not path_collision_free(local, self.points, clearance=.55 - 1e-5):
                 self.reset_mpc(reason='new cloud invalidated MPC prediction')
                 self.session.reason = 'blocked: new cloud invalidated MPC prediction'
                 return (0., 0.)
@@ -582,14 +603,16 @@ class LocalPlanner(Node):
                     if self.backend == 'mpc':
                         vx, vy = self.mpc_drive(pose, now)
                         vx, vy = self.bounded_mpc_command(vx, vy, now)
-                        if (getattr(self, 'ignore_lidar', False)
-                                and getattr(self.sequence, 'concurrent_yaw', False)):
+                        if getattr(self.sequence, 'concurrent_yaw', False):
                             # No proportional-yaw fallback: all three commands
                             # must originate from the same accepted MPC result.
                             wz = self.mpc_yaw_rate if getattr(self, 'mpc_pose_control', False) else 0.
-                            step = .2 * max(0., min(.1, now-self.last_command_time))
-                            previous = getattr(self, 'last_yaw_rate', 0.)
-                            wz = max(previous-step, min(previous+step, wz))
+                            # A blocked/waiting/reset solution must stop all axes
+                            # immediately, including a previously rotating base.
+                            if wz != 0.:
+                                step = .2 * max(0., min(.1, now-self.last_command_time))
+                                previous = getattr(self, 'last_yaw_rate', 0.)
+                                wz = max(previous-step, min(previous+step, wz))
                             wz = limit_goal_yaw_rate(wz, pose, self.session.goal, self.sequence.target_yaw)
                         if getattr(self.sequence, 'concurrent_yaw', False):
                             # Apply after acceleration limiting so a cached fast
@@ -657,6 +680,10 @@ class LocalPlanner(Node):
             dispatch=self.dispatch, owner_status_required=getattr(self, 'requires_owner_status', True),
             output_topic=self.output_topic, planner_backend=self.backend,
             collision_checks_enabled=self.collision_checks_enabled,
+            obstacle_points=len(self.points),
+            obstacle_method=('direct_goal_pose_mpc_collision_stop' if self.backend == 'mpc'
+                             and not getattr(self, 'ignore_lidar', False) else 'disabled_or_legacy'),
+            path_selector_enabled=False if self.backend == 'mpc' else True,
             ignore_lidar=getattr(self, 'ignore_lidar', False),
             supervised_reverse_test=getattr(self, 'supervised_reverse_test', False),
             sensor_freshness_policy='independent_receipt_age_2s',

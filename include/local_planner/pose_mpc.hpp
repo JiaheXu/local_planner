@@ -11,7 +11,7 @@ struct PoseMpcResult {
   std::vector<Eigen::Vector3d> poses, controls;
 };
 
-// Obstacle-free body-velocity MPC. One sequential-QP linearization per request;
+// Body-velocity tracking MPC. One sequential-QP linearization per request;
 // return the nonlinear rollout, not the affine approximation, for validation.
 class PoseMpc {
  public:
@@ -27,7 +27,8 @@ class PoseMpc {
   static double yaw_cap(double distance,double error) {
     return std::abs(error)<=.05 ? 0. : std::min({.1,.03+.07*std::min(distance/.3,1.),.8*std::abs(error)});
   }
-  PoseMpcResult solve(const Point& goal,double goal_yaw,const Point& previous,double previous_yaw) {
+  PoseMpcResult solve(const Point& goal,double goal_yaw,const Point& previous,double previous_yaw,
+                      const Points& reference={}) {
     using Clock=std::chrono::steady_clock;
     const auto start=Clock::now();
     auto elapsed=[&]() {return std::chrono::duration<double>(Clock::now()-start).count();};
@@ -35,6 +36,9 @@ class PoseMpc {
     if(!goal.allFinite() || goal.norm()>10. || !previous.allFinite() || previous.lpNorm<1>()>.100001
        || !std::isfinite(goal_yaw) || !std::isfinite(previous_yaw) || std::abs(previous_yaw)>.100001
        || !std::isfinite(deadline_) || deadline_<=0.)return fail("invalid pose MPC input");
+    if(!reference.empty() && reference.size()!=horizon)return fail("invalid pose reference horizon");
+    for(const auto& p:reference)
+      if(!p.allFinite() || p.norm()>10.)return fail("invalid pose reference point");
     goal_yaw=std::atan2(std::sin(goal_yaw),std::cos(goal_yaw));
     Eigen::Vector3d prev(previous.x(),previous.y(),previous_yaw), nominal=Eigen::Vector3d::Zero();
     Eigen::MatrixXd prediction=Eigen::MatrixXd::Zero(variables,variables);
@@ -58,7 +62,8 @@ class PoseMpc {
       sensitivity=F*sensitivity; sensitivity.block<3,3>(0,3*i)+=G;
       affine=F*affine+bias;
       prediction.middleRows(3*i,3)=sensitivity;offset.segment<3>(3*i)=affine;
-      target.segment<3>(3*i)=Eigen::Vector3d(goal.x(),goal.y(),goal_yaw);
+      const Point& xy=reference.empty()?goal:reference[i];
+      target.segment<3>(3*i)=Eigen::Vector3d(xy.x(),xy.y(),goal_yaw);
       weights.segment<3>(3*i)=Eigen::Vector3d(5.,5.,2.)*(i==horizon-1?3.:1.);
       if(i)D.block<3,3>(3*i,3*i-3)=-Eigen::Matrix3d::Identity();
       A.block<4,2>(6*i,3*i)=signs;

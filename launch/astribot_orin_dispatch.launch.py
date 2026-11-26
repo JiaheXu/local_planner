@@ -12,27 +12,30 @@ from launch_ros.actions import Node
 
 def components(context):
     basic = LaunchConfiguration('basic_control').perform(context).lower() == 'true'
+    ignore_lidar = LaunchConfiguration('ignore_lidar').perform(context).lower() == 'true'
     package = Path(get_package_share_directory('local_planner'))
     local, remote = '/astribot/local_planner', '/cocomatrix/local_planner'
     config = str(package / 'config/astribot.yaml')
     backend = Node(package='local_planner', executable='localPlanner',
         name='astribot_orin_mpc', output='screen',
-        parameters=[config, {'pathFolder': str(package / 'paths'), 'planner_backend': 'mpc'}],
+        parameters=[config, {'planner_backend': 'mpc'}],
         remappings=[('/mpc_request', remote + '/mpc_request'),
                     ('/mpc_result', remote + '/mpc_result')])
     coordinator = Node(executable='/usr/bin/python3',
         arguments=[PathJoinSubstitution([LaunchConfiguration('planner_source'),
                                         'python', 'orin_basic_coordinator.py' if basic else 'orin_dispatch_coordinator.py'])],
         name='astribot_orin_coordinator', output='screen',
-        parameters=[config, {'dispatch': True, 'ignore_lidar': True, 'planner_backend': 'mpc'}],
+        parameters=[config, {'dispatch': True, 'ignore_lidar': ignore_lidar, 'planner_backend': 'mpc',
+                             'python_collision_checks_enabled': True, 'collision_lidar': 'front'}],
         remappings=[(local + '/' + suffix, remote + '/' + suffix) for suffix in
-                    ('scan', 'way_point', 'cancel', 'path', 'path_map', 'status',
+                    ('scan', 'obstacles', 'way_point', 'cancel', 'path', 'path_map', 'status',
                      'mpc_request', 'mpc_result')]
         + [('/cmd_vel', remote + ('/cmd_vel' if basic else '/cmd_vel_unleased')),
            ('/astribot_viz/goal_pose', remote + '/goal_pose'),
            ('/fast_lio/chassis/odometry', remote + '/chassis_odometry'),
            ('/astribot/base/status', remote + '/owner_status'),
-           ('/astribot_viz/goal_cancel', remote + '/goal_cancel')])
+           ('/astribot_viz/goal_cancel', remote + '/goal_cancel'),
+           ('/sdk/astribot_lidar/front_scan', '/livox/lidar_front')])
     odometry = Node(executable='/usr/bin/python3',
         arguments=[PathJoinSubstitution([LaunchConfiguration('bringup_dir'), 'odometry.py'])],
         name='astribot_orin_chassis', output='screen')
@@ -45,6 +48,7 @@ def components(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('basic_control', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('ignore_lidar', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('bringup_dir', default_value='/home/astribot/ros2_ws/src/astribot_planner_bringup'),
         DeclareLaunchArgument('planner_source', default_value='/home/astribot/ros2_ws/src/local_planner'),
         OpaqueFunction(function=components)])

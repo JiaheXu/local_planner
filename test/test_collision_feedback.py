@@ -204,7 +204,7 @@ def test_selected_cloud_loss_stops_even_when_other_source_is_healthy(monkeypatch
         session=PathSession(),sequence=GoalSequence(),snapshots={},source_ids=None,
         owner_generation=None,owner_status={},dispatch=False,backend='mpc',mpc_epoch=1,
         mpc_solve_ms=None,commands=NS(publish=commands.append),cancels=transport,paths=transport,
-        status=transport,output_topic='shadow',cloud_stamp=1_000_000_000,
+        status=transport,output_topic='shadow',cloud_stamp=1_000_000_000,points=np.empty((0,2)),
         mpc_received=-float('inf'), mpc_requests={})
     state.session.begin((1.,0.),state.cloud_stamp);state.sequence.begin((1.,0.),0.)
     for method in ('ready','cancel','reset_mpc','wait_mpc'):

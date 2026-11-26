@@ -53,6 +53,9 @@ add_test(NAME planar_mpc COMMAND planar_mpc_test)
 add_executable(pose_mpc_test test/pose_mpc_test.cpp)
 target_link_libraries(pose_mpc_test Eigen3::Eigen)
 add_test(NAME pose_mpc COMMAND pose_mpc_test)
+add_executable(cloud_path_mpc_test test/cloud_path_mpc_test.cpp)
+target_link_libraries(cloud_path_mpc_test Eigen3::Eigen)
+add_test(NAME cloud_path_mpc COMMAND cloud_path_mpc_test)
 add_executable(pathFollower src/pathFollower.cpp)
 add_executable(astribotCoordinator src/astribotCoordinator.cpp)
 target_link_libraries(astribotCoordinator Eigen3::Eigen yaml-cpp "${cpp_typesupport_target}")
@@ -74,7 +77,7 @@ ament_target_dependencies(astribot_ros_smoke rclcpp std_msgs sensor_msgs nav_msg
 #   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
 #   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 
-ament_target_dependencies(localPlanner rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions)
+ament_target_dependencies(localPlanner rclcpp ament_index_cpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions)
 ament_target_dependencies(pathFollower rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions)
 
 # get_property(dirs DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES)
@@ -87,6 +90,7 @@ install(TARGETS
   pathFollower
   planar_mpc_test
   pose_mpc_test
+  cloud_path_mpc_test
   astribotCoordinator
   astribot_core_test
   astribot_coordinator_test

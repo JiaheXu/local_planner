@@ -17,7 +17,7 @@ The Python MPC default is **simultaneous translation and target-yaw tracking**,
 with a 0.1 m/s MPC translation limit and 0.03 m / 0.05 rad goal tolerances.
 Translation slows to at most `0.6 * distance_m` m/s near the goal, then zero
 inside 3 cm; yaw correction continues until the heading tolerance is met.
-In `--ignore-lidar` mode, the C++ pose MPC now jointly optimizes body `vx`, `vy`
+The C++ pose MPC jointly optimizes body `vx`, `vy`
 and yaw rate and publishes predicted orientations. Angular speed tapers with
 position and heading error, with a 0.03 rad/s cap at the position target before
 further heading-based reduction. The full planner must be rebuilt on both hosts
@@ -31,6 +31,46 @@ The library backend and native C++ coordinator retain their turn-first sequence.
 The original library backend remains selectable. MPC is C++. For current
 debugging, the default ROS coordinator is Python; `--cpp` selects the updated
 native coordinator explicitly.
+
+## Direct-goal MPC and point-cloud stop checks
+
+On Orin use `scripts/run_orin_dispatch.sh --avoid-obstacles --basic-control`.
+This reads native `/livox/lidar_front` directly on domain 25; collision data
+does not detour through the PC. The PC still owns the only SDK writer.
+`--ignore-lidar` remains an explicit obstacle-free diagnostic choice. Both
+choices support `--dry-run`, which prints the launch arguments without ROS
+nodes, locks or vendor environment setup.
+
+The cloud is transformed into the chassis frame; finite usable returns at
+0.03–1.8 m height and 0.30–4 m radius are projected into XY. Floor, body and
+invalid returns are excluded. Every retained XY return participates; it is
+not compressed into nearest-return LaserScan bins or the legacy nearest-24 QP.
+The Python pipeline requests direct-goal XY+yaw MPC. It does not load candidate
+paths, select a detour, or pass an intermediate XY reference to the optimizer.
+Obstacle constraints in the optimization are deferred. The existing point cloud
+is used only for post-solve and dispatch collision-stop checks at 0.55 m clearance.
+Simultaneous yaw control and near-goal speed reduction remain enabled.
+Full-cloud segment checks validate the actual nonlinear rollout and dispatched
+motion, including changes introduced by smoothing and command limiting.
+
+A blocked rollout publishes zero velocity and keeps the action goal pending for
+replanning. It cannot find a route around a blocking obstacle. There is no global route search and no guarantee
+of avoiding unseen obstacles, drop-offs, or protecting extended arms outside
+the nominal footprint. The design targets stationary indoor obstacles.
+The separate legacy `library` backend retains its path assets; Python MPC does
+not use them. Raw Livox intensity is not interpreted as terrain height.
+The compatibility flag `--avoid-obstacles` now enables collision stopping only;
+it does not enable detour planning. `--ignore-lidar` disables those cloud checks.
+
+`/cocomatrix/local_planner/obstacles` provides a map-frame visualization of the
+projected points. Display traffic is capped at 5,000 sampled points and 2 Hz;
+the planner and collision checks still use the full filtered cloud. The PC
+relay exposes it at `/astribot/local_planner/obstacles` for RViz. Status reports
+the method and full planning point count. Diagnostic samples retain acquisition
+timestamps; no raw sensor data is rewritten.
+
+Build and test before restarting either session. Syncing source or building
+does not activate this mode in an already-running planner.
 
 ## Build and check
 
@@ -94,8 +134,8 @@ not subscribe to LiDAR IMU. FAST-LIO still uses IMU independently.
 
 Collision input defaults to **front only** (`collision_lidar: front` in
 `config/astribot.yaml`): `/sdk/astribot_lidar/front_scan`. Python collision
-avoidance is enabled (`python_collision_checks_enabled: true`): front obstacles
-feed the planner and gate both translation and in-place turns. Rear data
+stopping is enabled (`python_collision_checks_enabled: true`): front obstacles
+gate translation and in-place turns after direct-goal MPC. Rear data
 cannot select a different source or block a goal. Explicit `collision_lidar: rear`
 selects rear only; `auto` enables front-preferred selection with rear fallback
 at a new goal. Rebuild/restart after changing this configuration.

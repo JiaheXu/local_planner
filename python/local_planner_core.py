@@ -107,13 +107,58 @@ def collision_free(vx, wz, points, *, vy=0., clearance=.40, horizon=2.):
     if (not all(math.isfinite(x) for x in (vx, vy, wz, clearance, horizon))
             or clearance <= 0 or horizon <= 0 or not np.isfinite(points).all()):
         return False
+    centers = []
     for t in np.linspace(0., horizon, 21):
         center = ([vx * t, vy * t] if abs(wz) < 1e-8 else
                   [(vx * math.sin(wz * t) + vy * (math.cos(wz * t) - 1)) / wz,
                    (vx * (1 - math.cos(wz * t)) + vy * math.sin(wz * t)) / wz])
-        if len(points) and np.any(np.linalg.norm(points - center, axis=1) <= clearance):
+        centers.append(center)
+    # Bound the arc's deviation from each chord, then check entire segments.
+    sagitta = (math.hypot(vx, vy)/abs(wz) * (1-math.cos(abs(wz)*horizon/40.))
+               if abs(wz) >= 1e-8 else 0.)
+    return path_collision_free(centers, points, clearance=clearance+sagitta)
+
+
+def path_collision_free(path, points, *, clearance=.55):
+    """Full-cloud circle clearance along every segment, not just sample centers."""
+    path, points = np.asarray(path, dtype=float), np.asarray(points, dtype=float)
+    if (path.ndim != 2 or path.shape[1] != 2 or not len(path)
+            or points.ndim != 2 or points.shape[1] != 2
+            or not np.isfinite(path).all() or not np.isfinite(points).all()
+            or not math.isfinite(clearance) or clearance <= 0.):
+        return False
+    # Exact range culling: excluded points cannot intersect the swept circle.
+    lo, hi = path.min(axis=0)-clearance, path.max(axis=0)+clearance
+    points = points[np.all((points >= lo) & (points <= hi), axis=1)]
+    if not len(points):
+        return True
+    for a, b in zip(path, np.vstack((path[1:], path[-1:]))):
+        delta = b-a
+        length2 = np.dot(delta, delta)
+        t = np.clip((points-a) @ delta / length2, 0., 1.) if length2 > 1e-16 else 0.
+        nearest = a + (t[:, None]*delta if np.ndim(t) else 0.)
+        if np.any(np.sum((points-nearest)**2, axis=1) <= clearance**2):
             return False
     return True
+
+
+def projected_obstacle_cloud(points, header):
+    """All filtered XY returns for RViz; acquisition stamp is unchanged."""
+    from copy import deepcopy
+    from sensor_msgs.msg import PointCloud2, PointField
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or not np.isfinite(points).all():
+        raise ValueError('Invalid projected obstacle points')
+    msg = PointCloud2()
+    msg.header = deepcopy(header); msg.header.frame_id = FRAME
+    msg.height, msg.width, msg.point_step = 1, len(points), 12
+    msg.row_step = 12*len(points)
+    msg.fields = [PointField(name=name, offset=i*4, datatype=PointField.FLOAT32, count=1)
+                  for i, name in enumerate(('x', 'y', 'z'))]
+    msg.is_bigendian = False; msg.is_dense = True
+    xyz = np.zeros((len(points), 3), dtype='<f4'); xyz[:, :2] = points
+    msg.data = xyz.tobytes()
+    return msg
 
 
 def limit_goal_velocity(velocity, pose, goal, tolerance=.03):

@@ -4,7 +4,14 @@
 
 Build `bash scripts/build_navigation_interfaces.sh` on PC and Orin once, then use
 the usual desktop Start Astribot and manual Orin command:
-`bash ~/ros2_ws/src/local_planner/scripts/run_orin_dispatch.sh --ignore-lidar --basic-control`.
+`bash ~/ros2_ws/src/local_planner/scripts/run_orin_dispatch.sh --avoid-obstacles --basic-control`.
+The Python pipeline uses direct-goal XY/yaw MPC without a candidate selector.
+The compatibility obstacle mode consumes native front clouds only for collision
+stopping; obstacle constraints in the optimizer are deferred. Use the
+explicit `--ignore-lidar` alternative only for an obstacle-free diagnostic.
+See the README's point-cloud obstacle section for filtering, clearance,
+blocked-goal behavior and visualization. Neither launch choice starts an SDK
+writer on Orin; commands still go to the existing PC owner.
 The launcher sources `local_planner_interfaces` automatically. The tiny interface
 build starts no nodes and does not rebuild the MPC backend.
 
@@ -206,13 +213,14 @@ The compiled `src/astribotCoordinator.cpp` owns goal stages and command checks;
 path following. Python source and tests remain available for debugging; both
 implementations use the same contracts and have no planner IMU subscriptions.
 
-Both MPC variants use a 2 s horizon (20 × 0.1 s). In Python `--ignore-lidar`
-mode, `pose_mpc.hpp` jointly optimizes body vx/vy/yaw-rate in a 60-variable QP.
+Both MPC variants use a 2 s horizon (20 × 0.1 s). In normal Python MPC,
+`pose_mpc.hpp` jointly optimizes body vx/vy/yaw-rate in a 60-variable QP.
 Each solve linearizes holonomic SE(2) dynamics about the previous published body
 velocity rollout. The returned path is the nonlinear rollout of optimized
 controls, with an orientation at every pose. This is one sequential-QP step per
-request, not an exact nonlinear optimizer. Other Python modes retain the XY
-solver plus proportional yaw; native C++ retains staged yaw. Eigen
+request, not an exact nonlinear optimizer. The goal itself supplies the XY
+reference; cloud checks can stop a rollout but do not select a detour. Explicit reverse tests retain the XY solver plus
+proportional yaw, and native C++ retains staged yaw. Eigen
 ADMM solves a convex quadratic objective with linear constraints; this is an
 independent implementation, not the OSQP library. Mathematical reference:
 [ADMM QP formulation](https://osqp.org/docs/solver/index.html).
@@ -220,7 +228,7 @@ Its speed bound is `|vx| + |vy| <= 0.1 m/s`; diagonal speed is therefore lower.
 Component acceleration is at most 0.14 m/s². The library follower remains at
 0.05 m/s. The owner independently applies its final velocity/acceleration limits.
 
-No-obstacle pose mode retains the 0.1 rad/s angular ceiling and adds a 0.2 rad/s²
+Joint pose mode retains the 0.1 rad/s angular ceiling and adds a 0.2 rad/s²
 optimizer angular acceleration bound. Both optimizer and dispatch reduce XY speed
 to `min(0.1, 0.6*distance_m)`. Angular speed is capped at
 `min(0.1, 0.03+0.07*min(distance_m/0.3,1), 0.8*abs(wrapped_yaw_error))` rad/s.
@@ -231,8 +239,10 @@ also bypasses the ramps. These final stops are intentionally not acceleration
 limited. The initial tuning is software-tested, not hardware-qualified.
 
 `MpcRequest.plan_yaw`, `goal_yaw` (radians relative to the request chassis), and
-`previous_yaw_rate` (rad/s) explicitly select pose planning. Pose mode rejects
-obstacle-bearing requests. Both hosts need a full `scripts/build.sh` build for
+`previous_yaw_rate` (rad/s) explicitly select pose planning. Pose mode routes
+obstacle-bearing requests through direct-goal MPC and validates the resulting
+rollout against the full cloud afterward. A blocked result contains one identity pose and zero Twist.
+Both hosts need a full `scripts/build.sh` build for
 the new request layout; the action interface is unchanged. The coordinator
 validates unit planar quaternions and reconstructs body-frame velocities from
 the path to check angular/translation speed and acceleration and the first
@@ -271,7 +281,7 @@ goal for retry. Late replies are discarded; they cannot extend command lifetime.
 After a stop, old in-flight predictions are invalidated and motion requires a new
 solution. Invalid results, owner faults, publisher changes and explicit cancel
 still clear the goal (basic mode does not gate planning on owner status).
-In no-obstacle pose mode, yaw comes from the same accepted MPC result as XY;
+In joint pose mode, yaw comes from the same accepted MPC result as XY;
 there is no proportional-yaw fallback while waiting for a result.
 Dispatch acceleration
 uses elapsed time, so faster replies cannot increase the ramp. Stops are immediate.
@@ -290,9 +300,9 @@ Status reports `ignore_lidar: true`, `collision_checks_enabled: false`, null
 collision source/topic and no collision-input errors. Default output remains
 shadow; `--dispatch` still explicitly selects `/cmd_vel`.
 
-**Python collision avoidance is enabled by default** with
+**Python collision-stop checks are enabled by default** with
 `python_collision_checks_enabled: true` and `collision_lidar: front` in
-`config/astribot.yaml`. Front-cloud obstacles feed MPC (or the library scan),
+`config/astribot.yaml`. Front-cloud obstacles feed post-solve MPC checks (or the library scan),
 invalidate unsafe predictions, and stop unsafe translation or in-place turns.
 Status reports `collision_checks_enabled: true` and, during a goal,
 `collision_topic: /sdk/astribot_lidar/front_scan`.
@@ -336,9 +346,11 @@ different blind spots; it does not provide front-sensor visibility guarantees.
 Finite sensor returns with range ≥0.05 m are transformed to chassis coordinates.
 Empty/all-invalid clouds are rejected. Retained obstacle heights are 0.03–1.8 m,
 radial distances 0.30–4 m; the inner radius removes nominal chassis self-returns.
-The library path lattice radius is fixed at 0.55 m. MPC uses a 0.55 m centre
-clearance, up to 24 nearby separating half-plane constraints and validation of
-predicted samples against every retained return. A new cloud rechecks cached
+The library path lattice radius is fixed at 0.55 m. Joint XY/yaw MPC uses a
+direct goal reference and post-solve 0.55 m centre clearance, with every
+retained point checked against entire rollout segments and held-Twist arcs.
+The legacy XY-only solver still uses up to 24 nearby separating half-plane
+constraints. A new cloud rechecks cached
 predictions. The actually dispatched MPC command is checked at 0.55 m through
 the owner's 0.2 s command lifetime, including after acceleration limiting.
 An additional 0.40 m / 2 s commanded-sweep check covers both backends and turns.
